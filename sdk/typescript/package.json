@@ -1,0 +1,39 @@
+{
+  "name": "@ses-ai/client",
+  "version": "2.0.0",
+  "description": "Official TypeScript/JavaScript client SDK for Semantic Engine (SES)",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "semantic-engine",
+    "rag",
+    "vector-search",
+    "qdrant",
+    "llm",
+    "offline-ai",
+    "local-ai"
+  ],
+  "author": "Julio Patron <juliopc92@gmail.com>",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elbuilder77/Semantic-Engine.git",
+    "directory": "sdk/typescript"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}

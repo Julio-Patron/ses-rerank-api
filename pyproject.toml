@@ -1,0 +1,62 @@
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ses-core"
+version = "2.0.3"
+description = "Offline-first RAG engine for private, locally operated document systems"
+authors = [{name = "Julio Patron", email = "juliopc92@gmail.com"}]
+license = "GPL-3.0-only"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["rag", "llm", "offline", "ai", "semantic-search", "qdrant", "ollama", "local-ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "sentence-transformers>=2.2.2",
+    "qdrant-client>=1.12.0",
+    "pypdf>=3.9.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.2",
+    "numpy>=1.26.0",
+    "pydantic>=2.4.2",
+    "watchdog>=3.0.0",
+    "redis>=5.0.1",
+    "python-dotenv>=1.0.0",
+    "smbprotocol>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "pytest-asyncio>=0.23.0", "black", "flake8"]
+server = ["fastapi>=0.104.0", "uvicorn>=0.23.2", "fpdf2>=2.7.4", "httpx>=0.24.1", "python-multipart>=0.0.9"]
+
+[project.scripts]
+ses = "ses.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/elbuilder77/Semantic-Engine"
+Documentation = "https://github.com/elbuilder77/Semantic-Engine#readme"
+Repository = "https://github.com/elbuilder77/Semantic-Engine.git"
+
+[tool.maturin]
+bindings = "pyo3"
+features = ["python"]
+include = [{ path = "LICENSE", format = "sdist" }]
+manifest-path = "core_rs/Cargo.toml"
+module-name = "jas_vector_core"
+python-packages = ["ses"]
+
+[tool.pytest.ini_options]
+addopts = '-m "not integration"'
+markers = [
+    "integration: requires the real Qdrant and Redis service stack",
+]

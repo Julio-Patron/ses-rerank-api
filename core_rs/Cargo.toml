@@ -1,0 +1,29 @@
+[package]
+name = "jas_vector_core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Julio Patron <juliopc92@gmail.com>"]
+description = "High-performance vector cosine similarity search and re-ranking core in Rust with PyO3 bindings"
+license = "GPL-3.0-only"
+repository = "https://github.com/elbuilder77/Semantic-Engine"
+readme = "README.md"
+keywords = ["vector", "cosine-similarity", "rag", "pyo3", "search"]
+categories = ["algorithms", "science", "api-bindings"]
+publish = ["crates-io"]
+
+[lib]
+name = "jas_vector_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+python = [
+    "dep:numpy",
+    "dep:pyo3",
+    "pyo3/abi3-py39",
+    "pyo3/extension-module",
+]
+
+[dependencies]
+pyo3 = { version = "0.28.3", optional = true }
+numpy = { version = "0.28.0", optional = true }

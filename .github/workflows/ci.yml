@@ -1,0 +1,214 @@
+name: SES Semantic Engine CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portal:
+    name: Portal Lint & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Set up Node.js 22
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+        cache: "npm"
+        cache-dependency-path: portal/package-lock.json
+
+    - name: Install Portal Dependencies
+      run: npm ci --prefix portal
+
+    - name: Validate Portal
+      run: |
+        npm --prefix portal run lint
+        npm --prefix portal run test
+        npm --prefix portal run build
+
+  test-and-build:
+    name: Python Test & Rust Wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Validate Local Dependency Compose
+      run: |
+        QDRANT_API_KEY="$(openssl rand -hex 16)" \
+        REDIS_PASSWORD="$(openssl rand -hex 16)" \
+        docker compose --env-file .env.compose.example config --quiet
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: "pip"
+
+    - name: Validate crates.io release preflight
+      run: python scripts/check_crate_publication.py --allow-missing
+
+    - name: Install Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Cache Cargo Dependencies
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          core_rs/target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('core_rs/Cargo.lock') }}
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .[dev,server]
+        python -m pip install "maturin>=1,<2"
+
+    - name: Code Style Check (Linter)
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 ses/ tests/ gateway/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        # exit-zero treats all errors as warnings
+        flake8 ses/ tests/ gateway/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Validate and Build Rust Wheel (PyO3)
+      run: |
+        cargo fmt --manifest-path core_rs/Cargo.toml -- --check
+        cargo test --manifest-path core_rs/Cargo.toml
+        cargo clippy --manifest-path core_rs/Cargo.toml --all-targets -- -D warnings
+        rm -rf .tmp/ci-wheel
+        mkdir -p .tmp/ci-wheel
+        python -m maturin build --release --interpreter python --out .tmp/ci-wheel
+        python -m pip install --force-reinstall .tmp/ci-wheel/ses_core-*.whl
+        python -c "import ses, numpy as np, jas_vector_core as j; q=np.array([1.0,0.0],dtype=np.float32); d=np.array([[0.0,1.0],[1.0,0.0]],dtype=np.float32); assert j.cosine_similarity_search_numpy(q,d,1)[0][0] == 1"
+
+    - name: Run Test Suite (Pytest)
+      env:
+        DEBUG: "true"
+        VALID_API_KEYS: '{"personal_default": {"tier": "internal", "active": true}, "ses_internal_master_001": {"tier": "internal", "active": true}}'
+      run: |
+        pytest --cov=ses --cov-report=xml -m "not integration"
+
+    - name: Run Bounded Synthetic Performance Smoke
+      env:
+        DEBUG: "true"
+      run: |
+        python -c "import sys; sys.path.insert(0, 'tests/performance'); import benchmark; benchmark.benchmark_search(num_documents=1000, dimensions=384, top_k=10, iterations=3); benchmark.benchmark_streaming_scan(num_files=100)"
+
+  integration-tests:
+    name: Integration Tests (Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test-and-build
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Set up Docker Compose
+      run: |
+        # Docker Compose v2 is already installed on ubuntu-latest runners
+        docker compose version
+
+    - name: Generate test credentials
+      id: creds
+      run: |
+        QDRANT_API_KEY="$(openssl rand -hex 16)"
+        REDIS_PASSWORD="$(openssl rand -hex 16)"
+        echo "::add-mask::$QDRANT_API_KEY"
+        echo "::add-mask::$REDIS_PASSWORD"
+        echo "QDRANT_API_KEY=$QDRANT_API_KEY" >> "$GITHUB_OUTPUT"
+        echo "REDIS_PASSWORD=$REDIS_PASSWORD" >> "$GITHUB_OUTPUT"
+
+    - name: Prepare environment file
+      run: |
+        cat > .env.compose <<EOF
+        QDRANT_API_KEY=${{ steps.creds.outputs.QDRANT_API_KEY }}
+        REDIS_PASSWORD=${{ steps.creds.outputs.REDIS_PASSWORD }}
+        EOF
+
+    - name: Start services
+      env:
+        QDRANT_API_KEY: ${{ steps.creds.outputs.QDRANT_API_KEY }}
+        REDIS_PASSWORD: ${{ steps.creds.outputs.REDIS_PASSWORD }}
+      run: |
+        docker compose -f docker-compose.yml --env-file .env.compose up -d qdrant redis
+        # Wait for services to become healthy (max 60 seconds)
+        echo "Waiting for services to be healthy..."
+        services_ready=false
+        for i in {1..60}; do
+          if (curl -sf http://localhost:6333/healthz > /dev/null 2>&1 || curl -sf http://localhost:6333/health > /dev/null 2>&1) && \
+             (docker compose -f docker-compose.yml --env-file .env.compose exec -T redis redis-cli -a "${REDIS_PASSWORD}" ping 2>/dev/null | grep -q PONG); then
+            echo "All services healthy after $i seconds"
+            services_ready=true
+            break
+          fi
+          echo "Waiting for services... ($i/60)"
+          sleep 1
+        done
+        if [ "$services_ready" != "true" ]; then
+          echo "::error::Qdrant and Redis did not become healthy within 60 seconds."
+          docker compose -f docker-compose.yml --env-file .env.compose ps qdrant redis
+          exit 1
+        fi
+        docker compose -f docker-compose.yml --env-file .env.compose ps qdrant redis
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: "pip"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install --no-cache-dir \
+          --index-url https://download.pytorch.org/whl/cpu \
+          "torch==2.13.0+cpu"
+        python -m pip install --no-cache-dir -e .[dev]
+
+    - name: Run integration tests
+      env:
+        DEBUG: "true"
+        QDRANT_API_KEY: ${{ steps.creds.outputs.QDRANT_API_KEY }}
+        REDIS_PASSWORD: ${{ steps.creds.outputs.REDIS_PASSWORD }}
+      run: |
+        pytest --cov=ses --cov-report=xml -m integration tests/integration/
+
+    - name: Tear down services
+      if: always()
+      run: |
+        docker compose -f docker-compose.yml --env-file .env.compose down -v

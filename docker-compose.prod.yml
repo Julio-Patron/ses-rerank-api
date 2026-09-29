@@ -1,0 +1,105 @@
+name: semantic-engine-prod
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.3
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env.prod}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - ses-internal
+
+  redis:
+    image: redis:7.4.10-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.prod}"
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
+    networks:
+      - ses-internal
+
+  ollama:
+    image: ollama/ollama:0.32.5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - ses-internal
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_BIND_IP:-127.0.0.1}:8000:8000"
+    environment:
+      DEBUG: "${DEBUG:-false}"
+      GATEWAY_ADMIN_KEY: "${GATEWAY_ADMIN_KEY:?Set GATEWAY_ADMIN_KEY in .env.prod}"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env.prod}"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.prod}"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3.2}"
+      GATEWAY_CORS_ORIGINS: "${GATEWAY_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}"
+      PERSISTENCE_DB_PATH: "/data/gateway_state.db"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - gateway-data:/data
+    networks:
+      - ses-internal
+
+  portal:
+    build:
+      context: ./portal
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SES_API_URL: "${NEXT_PUBLIC_SES_API_URL:-http://localhost:8000}"
+    restart: unless-stopped
+    ports:
+      - "${PORTAL_BIND_IP:-127.0.0.1}:3000:3000"
+    environment:
+      NODE_ENV: "production"
+      NEXT_PUBLIC_SES_API_URL: "${NEXT_PUBLIC_SES_API_URL:-http://localhost:8000}"
+    depends_on:
+      - gateway
+    networks:
+      - ses-internal
+
+networks:
+  ses-internal:
+    driver: bridge
+
+volumes:
+  qdrant-data:
+  redis-data:
+  ollama-data:
+  gateway-data:

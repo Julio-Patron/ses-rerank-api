@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧠 SES Enterprise Gateway — Dashboard</title>
+    <!-- Google Fonts: Outfit & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="dashboard-wrapper">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand">
+                <span class="brand-logo">🧠</span>
+                <div class="brand-text">
+                    <h1>SES Enterprise</h1>
+                    <span>Gateway Layer</span>
+                </div>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-tab="tab-overview">
+                    <svg viewBox="0 0 24 24" class="nav-icon"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+                    <span>Overview & Analytics</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="tab-playground">
+                    <svg viewBox="0 0 24 24" class="nav-icon"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.4z"/></svg>
+                    <span>RAG Playground</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="tab-documents">
+                    <svg viewBox="0 0 24 24" class="nav-icon"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                    <span>Document Manager</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="tab-keys" id="nav-keys-btn">
+                    <svg viewBox="0 0 24 24" class="nav-icon"><path d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+                    <span>API Key Manager</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="key-status-box">
+                    <label>Active API Key:</label>
+                    <div class="input-with-button">
+                        <input type="password" id="active-api-key" placeholder="Enter API Key..." value="">
+                        <button id="btn-save-key" title="Save API Key">✓</button>
+                    </div>
+                    <span class="key-badge" id="active-key-role">Admin Mode</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <!-- Topbar / Health Panel -->
+            <header class="topbar">
+                <div class="welcome">
+                    <h2>SES Commercial Gateway</h2>
+                    <p id="current-namespace-indicator">Active Namespace: <span>personal_default</span></p>
+                </div>
+                
+                <div class="health-grid">
+                    <div class="health-pill" id="health-gateway">
+                        <span class="indicator blink"></span>
+                        <span>Gateway API</span>
+                    </div>
+                    <div class="health-pill" id="health-qdrant">
+                        <span class="indicator"></span>
+                        <span>Qdrant DB</span>
+                    </div>
+                    <div class="health-pill" id="health-redis">
+                        <span class="indicator"></span>
+                        <span>Redis Cache</span>
+                    </div>
+                    <div class="health-pill" id="health-ollama">
+                        <span class="indicator"></span>
+                        <span>Ollama LLM</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Dashboard Content Container -->
+            <div class="tab-content">
+                
+                <!-- TAB 1: OVERVIEW & ANALYTICS -->
+                <section id="tab-overview" class="tab-pane active">
+                    <!-- Metric Cards -->
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <div class="metric-icon requests">
+                                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                            </div>
+                            <div class="metric-info">
+                                <h3>Total Requests</h3>
+                                <span class="metric-val" id="metric-requests">0</span>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon search">
+                                <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                            </div>
+                            <div class="metric-info">
+                                <h3>Search Queries</h3>
+                                <span class="metric-val" id="metric-searches">0</span>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon ingest">
+                                <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+                            </div>
+                            <div class="metric-info">
+                                <h3>Ingested Docs</h3>
+                                <span class="metric-val" id="metric-ingestions">0</span>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon errors">
+                                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                            </div>
+                            <div class="metric-info">
+                                <h3>Average Latency</h3>
+                                <span class="metric-val" id="metric-latency">0 ms</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Charts and Performance Section -->
+                    <div class="grid-two-cols">
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>📈 API Traffic Overview</h3>
+                                <span class="badge" id="traffic-engine-badge">Rust Core Accelerated</span>
+                            </div>
+                            <div class="chart-container">
+                                <!-- Self-contained CSS/JS chart using HTML5 Canvas -->
+                                <canvas id="traffic-chart" width="480" height="200"></canvas>
+                            </div>
+                        </div>
+                        
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>🔑 Client API Key Performance</h3>
+                            </div>
+                            <div class="keys-performance-list" id="keys-performance-container">
+                                <div class="empty-state">No key metrics available yet.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Live Request Feed -->
+                    <div class="panel request-logs-panel">
+                        <div class="panel-header">
+                            <h3>⚡ Live Request Log Feed</h3>
+                            <button class="btn-secondary" id="btn-clear-logs">Clear Logs</button>
+                        </div>
+                        <div class="log-table-container">
+                            <table class="data-table" id="logs-table">
+                                <thead>
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>Client Name</th>
+                                        <th>Endpoint</th>
+                                        <th>Namespace</th>
+                                        <th>Status</th>
+                                        <th>Latency (ms)</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="6" class="table-empty">No requests logged yet. Waiting for API traffic...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB 2: RAG PLAYGROUND -->
+                <section id="tab-playground" class="tab-pane">
+                    <div class="playground-layout">
+                        <!-- Left Panel: Input Query -->
+                        <div class="panel query-panel">
+                            <div class="panel-header">
+                                <h3>🧪 RAG Search & Generate Sandbox</h3>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="playground-query">Natural Language Query</label>
+                                <textarea id="playground-query" rows="4" placeholder="e.g. ¿Cuáles son las cláusulas de rescisión del contrato de confidencialidad?"></textarea>
+                            </div>
+
+                            <div class="playground-settings">
+                                <div class="form-row">
+                                    <div class="form-group flex-1">
+                                        <label for="playground-topk">Top K Documents</label>
+                                        <input type="number" id="playground-topk" value="5" min="1" max="10">
+                                    </div>
+                                    <div class="form-group flex-1">
+                                        <label for="playground-threshold">Relevance Threshold</label>
+                                        <input type="number" id="playground-threshold" value="0.0" min="0.0" max="1.0" step="0.05">
+                                    </div>
+                                </div>
+                                
+                                <div class="form-group checkbox-group">
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="playground-generate" checked>
+                                        <span class="slider"></span>
+                                    </label>
+                                    <label for="playground-generate" class="checkbox-label">Generate Answer using Ollama (LLM)</label>
+                                </div>
+
+                                <div class="form-group" id="ollama-model-override-group">
+                                    <label for="playground-model">Ollama Model Override (Optional)</label>
+                                    <input type="text" id="playground-model" placeholder="e.g. llama3.2">
+                                </div>
+                            </div>
+
+                            <button class="btn-primary w-100" id="btn-run-query">
+                                <span class="btn-text">Execute Retrieval & Generation</span>
+                                <span class="spinner hidden"></span>
+                            </button>
+                        </div>
+
+                        <!-- Right Panel: Results -->
+                        <div class="panel results-panel">
+                            <div class="panel-header">
+                                <h3>🎯 Output & Retrieved Documents</h3>
+                            </div>
+                            
+                            <!-- Result Tabs -->
+                            <div class="result-tabs-header">
+                                <button class="result-tab active" data-result-pane="pane-answer">💡 Generated Response</button>
+                                <button class="result-tab" data-result-pane="pane-documents">📂 Source Passages</button>
+                            </div>
+                            
+                            <div class="result-tabs-content">
+                                <!-- Generated Answer -->
+                                <div class="result-pane active" id="pane-answer">
+                                    <div class="answer-container" id="playground-answer-output">
+                                        <div class="empty-state">Submit a query to generate an answer.</div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Source Passages -->
+                                <div class="result-pane" id="pane-documents">
+                                    <div class="sources-list" id="playground-sources-output">
+                                        <div class="empty-state">Submit a query to view retrieved document chunks.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB 3: DOCUMENT MANAGER -->
+                <section id="tab-documents" class="tab-pane">
+                    <div class="grid-two-cols-unequal">
+                        <!-- Ingest Section -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>📥 Document Ingest Engine</h3>
+                            </div>
+                            
+                            <!-- Upload Tabs -->
+                            <div class="ingest-tabs">
+                                <button class="ingest-tab active" data-ingest-mode="ingest-file">File Upload</button>
+                                <button class="ingest-tab" data-ingest-mode="ingest-text">Raw Text Ingestion</button>
+                            </div>
+
+                            <!-- File Upload Area -->
+                            <div class="ingest-content active" id="ingest-file">
+                                <div class="drop-zone" id="file-drop-zone">
+                                    <div class="drop-zone-prompt">
+                                        <span class="drop-icon">📁</span>
+                                        <p>Drag & Drop your file here or <span>browse files</span></p>
+                                        <span class="supported-formats">Supported Formats: PDF, DOCX, XLSX, CSV, TXT</span>
+                                    </div>
+                                    <input type="file" id="ingest-file-input" class="hidden-input">
+                                </div>
+                                
+                                <div class="file-details-box hidden" id="file-details-box">
+                                    <div class="file-info-row">
+                                        <span class="file-name" id="selected-file-name">filename.pdf</span>
+                                        <span class="file-size" id="selected-file-size">0 KB</span>
+                                    </div>
+                                    <div class="form-group mt-15">
+                                        <label for="file-metadata-json">Additional Metadata (JSON)</label>
+                                        <textarea id="file-metadata-json" rows="3" placeholder='{"author": "Legal Team", "category": "Contract"}'></textarea>
+                                    </div>
+                                </div>
+                                
+                                <button class="btn-primary w-100 mt-15" id="btn-upload-file" disabled>
+                                    <span>Ingest Document Semantically</span>
+                                    <span class="spinner hidden"></span>
+                                </button>
+                            </div>
+
+                            <!-- Raw Text Area -->
+                            <div class="ingest-content" id="ingest-text">
+                                <div class="form-group">
+                                    <label for="text-ingest-title">Document Reference Title</label>
+                                    <input type="text" id="text-ingest-title" placeholder="e.g. Legal Clause Amendment 2026">
+                                </div>
+                                <div class="form-group">
+                                    <label for="text-ingest-body">Text Body</label>
+                                    <textarea id="text-ingest-body" rows="6" placeholder="Paste the document text content here..."></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label for="text-ingest-metadata">Metadata (JSON)</label>
+                                    <textarea id="text-ingest-metadata" rows="2" placeholder='{"tags": ["internal", "update"]}'></textarea>
+                                </div>
+                                <button class="btn-primary w-100" id="btn-upload-text">
+                                    <span>Index Raw Text</span>
+                                    <span class="spinner hidden"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Documents Table -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>📂 Namespace Library index</h3>
+                                <button class="btn-secondary" id="btn-refresh-docs">Refresh Library</button>
+                            </div>
+                            <div class="docs-table-container">
+                                <table class="data-table" id="documents-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Filename</th>
+                                            <th>Snippet Preview</th>
+                                            <th>Uploader</th>
+                                            <th>Date Indexed</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td colspan="5" class="table-empty">Loading namespace documents...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB 4: API KEY MANAGER -->
+                <section id="tab-keys" class="tab-pane">
+                    <div class="grid-two-cols-unequal">
+                        <!-- Generate Key -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>🔑 Create Client API Key</h3>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="new-key-name">Client / App Name</label>
+                                <input type="text" id="new-key-name" placeholder="e.g. Frontend Sales Agent WebApp">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-key-namespace">Isolated Namespace</label>
+                                <input type="text" id="new-key-namespace" value="personal_default" placeholder="e.g. sales_data">
+                                <small class="field-help">API calls using this key will only search and ingest documents inside this isolated namespace.</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="new-key-ratelimit">Rate Limit (req/min)</label>
+                                <input type="number" id="new-key-ratelimit" value="60" min="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-key-role">Authorization Level</label>
+                                <select id="new-key-role">
+                                    <option value="client">Client (Restricted to Namespace)</option>
+                                    <option value="admin">Admin (Global Control & Gateway Config)</option>
+                                </select>
+                            </div>
+                            
+                            <button class="btn-primary w-100" id="btn-create-key">
+                                <span>Generate Secure Token</span>
+                                <span class="spinner hidden"></span>
+                            </button>
+                        </div>
+
+                        <!-- Active Keys List -->
+                        <div class="panel">
+                            <div class="panel-header">
+                                <h3>🔒 Active Commercial Access Tokens</h3>
+                            </div>
+                            <div class="keys-table-container">
+                                <table class="data-table" id="keys-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Client Name</th>
+                                            <th>Namespace</th>
+                                            <th>Role</th>
+                                            <th>Rate Limit</th>
+                                            <th>Token Token</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td colspan="6" class="table-empty">Loading authorized API keys...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="toast hidden" id="toast-message">
+        <span class="toast-text">Operation successful.</span>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
