@@ -15,11 +15,8 @@ import {
 
 const navItems = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/search", icon: Search, label: "RAG Search" },
-  { href: "/documents", icon: FileText, label: "Documents" },
   { href: "/analytics", icon: BarChart3, label: "Analytics" },
   { href: "/keys", icon: KeyRound, label: "API Keys" },
-  { href: "/reports", icon: FileBox, label: "Reports" },
   { href: "/settings", icon: Settings, label: "Settings" },
 ];
 
