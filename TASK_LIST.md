@@ -16,14 +16,14 @@ El objetivo actual es **certificar la calidad del código** y ejecutar un **lanz
 - [x] Eliminar dependencias y módulos legacy del buscador semántico local (`ses/cli.py`, `ses/watcher`, etc.).
 - [x] Limpiar rutas del Gateway (`/api/v1/search`) dejando únicamente el endpoint `/v1/rerank` y los de administración de llaves.
 - [x] Depurar el portal frontend (Next.js) para convertirlo en el Dashboard "Token-Gated" de analíticas de clientes.
-- [ ] **Auditoría de Seguridad:** Revisar manejo de variables de entorno y confirmación de que la validación Bearer no es vulnerable a inyección.
-- [ ] **Auditoría de Rendimiento:** Confirmar que `jas_vector_core` no sufre *memory leaks* al recibir picos de miles de peticiones simultáneas en la nube.
+- [x] **Auditoría de Seguridad:** Revisar manejo de variables de entorno y confirmación de que la validación Bearer no es vulnerable a inyección.
+- [x] **Auditoría de Rendimiento:** Confirmar que `jas_vector_core` no sufre *memory leaks* al recibir picos de miles de peticiones simultáneas en la nube.
 
 ### Fase 2: Pruebas (Tests) Unitarias y End-to-End (E2E)
-- [ ] **Reparar tests unitarios rotos:** El desacople rompió las dependencias de `mock_gateway_services` en `gateway/test_gateway.py`. Actualizar los mocks para que `pytest` pase al 100%.
-- [ ] **Test Unitario de Rerank (`tests/test_reranker.py`):** Crear test verificando la exactitud del motor matemático en Python y las fórmulas de ROI (ahorro de tokens).
-- [ ] **Test E2E de FastAPI:** Levantar un `TestClient` asíncrono para verificar que `/v1/rerank` descuenta exactamente 1 crédito para <=25 documentos y devuelve error de *Self-Healing* en casos límite.
-- [ ] **Test E2E del Webhook de Stripe:** Testear la recepción de un payload simulado para garantizar que se crea una API Key con 100,000 créditos.
+- [x] **Reparar tests unitarios rotos:** El desacople rompió las dependencias de `mock_gateway_services` en `gateway/test_gateway.py`. Actualizar los mocks para que `pytest` pase al 100%.
+- [x] **Test Unitario de Rerank (`tests/test_reranker.py`):** Crear test verificando la exactitud del motor matemático en Python y las fórmulas de ROI (ahorro de tokens).
+- [x] **Test E2E de FastAPI:** Levantar un `TestClient` asíncrono para verificar que `/v1/rerank` descuenta exactamente 1 crédito para <=25 documentos y devuelve error de *Self-Healing* en casos límite.
+- [x] **Test E2E del Webhook de Stripe:** Testear la recepción de un payload simulado para garantizar que se crea una API Key con 100,000 créditos.
 
 ### Fase 3: Infraestructura, Empaquetado y Documentación
 - [ ] **Refinamiento del Dockerfile:** Probar la construcción completa de la imagen `runner` para asegurar que el binario de Rust corre en Alpine/Slim sin fallas de Glibc.

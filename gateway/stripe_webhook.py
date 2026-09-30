@@ -1,13 +1,9 @@
 import os
-import json
 import logging
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse
 from gateway.database import get_database_adapter
-import hashlib
-import uuid
 
-# Si no tienes instalada la librería 'stripe', la puedes instalar con 'pip install stripe'
 try:
     import stripe
 except ImportError:
@@ -17,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Variables de entorno para Stripe
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "")
 
@@ -49,45 +44,38 @@ async def stripe_webhook(request: Request):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        
-        # 1. Extraer información del cliente
+
         customer_email = session.get("customer_details", {}).get("email")
-        
-        # 2. Identificar qué compró (Growth vs Enterprise credit pack)
-        # Puedes mapear el amount_total a la cantidad de créditos.
-        amount_paid = session.get("amount_total", 0) # En centavos ($50.00 = 5000)
-        
-        # Lógica de negocio: 100,000 créditos cuestan $49 USD (4900 centavos)
+        amount_paid = session.get("amount_total", 0)  # cents ($49.00 = 4900)
+
+        # Business rule: 100,000 credits for >= $49; otherwise starter pack
         credits_to_add = 100000 if amount_paid >= 4900 else 10000
         plan_tier = "growth" if amount_paid >= 4900 else "developer"
-        
-        # 3. Generar la nueva API Key
-        raw_key = f"ses_live_{uuid.uuid4().hex}"
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-        key_prefix = raw_key[:15] + "..."
 
-        logger.info(f"Procesando pago para {customer_email}. Asignando {credits_to_add} créditos.")
+        logger.info(
+            "Processing Stripe payment for %s. Assigning %s credits.",
+            customer_email,
+            credits_to_add,
+        )
 
-        # 4. Registrar en SQLite / Postgres
         db = get_database_adapter()
-        # NOTA: Debes asegurar que create_api_key en database.py soporte inyectar 'credits_remaining' o hacer un update después.
         try:
-            # Creamos la key (Ajusta los parámetros según tu método create_api_key)
-            namespace = f"user_{customer_email.split('@')[0]}" if customer_email else "user_stripe"
+            namespace = (
+                f"user_{customer_email.split('@')[0]}"
+                if customer_email
+                else "user_stripe"
+            )
             new_key_data = await db.create_api_key(
                 name=f"Stripe Purchase ({plan_tier})",
                 namespace=namespace,
                 rate_limit=500 if plan_tier == "growth" else 60,
-                role="client"
+                role="client",
             )
-            # Actualizamos sus créditos (requerirías un método explícito para set_credits si create_api_key no lo recibe,
-            # pero por simplicidad de este webhook asumo que lo inyectarás o harás un UPDATE).
-            # await db.set_credits(key_hash, credits_to_add)
-            
-            # 5. Enviar la API Key al usuario por email (Resend, SendGrid)
-            # send_email(customer_email, f"Tu API Key de SES Rerank", f"Tu token es: {raw_key}")
-            logger.info(f"API Key generada exitosamente. Prefix: {key_prefix}")
-            
+            key_hash = new_key_data["key_details"]["key"]
+            await db.set_credits(key_hash, credits_to_add)
+            key_prefix = new_key_data["key_details"].get("key_prefix", "")
+            logger.info("API Key generated successfully. Prefix: %s", key_prefix)
+
         except Exception as e:
             logger.error(f"Error registrando compra en DB: {e}")
             raise HTTPException(status_code=500, detail="Database Error")

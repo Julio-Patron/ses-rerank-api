@@ -210,6 +210,20 @@ async def _probe_ollama() -> bool:
         return False
 
 
+def _rust_acceleration_available() -> bool:
+    """Return True when the native jas_vector_core extension is importable."""
+    try:
+        import jas_vector_core
+
+        # Test suites may inject MagicMock placeholders into sys.modules.
+        if type(jas_vector_core).__name__ == "MagicMock":
+            return False
+        fn = getattr(jas_vector_core, "cosine_similarity_search_numpy", None)
+        return callable(fn) and type(fn).__name__ != "MagicMock"
+    except Exception:
+        return False
+
+
 async def _dependency_health() -> Dict[str, Any]:
     qdrant_ok, redis_ok, ollama_ok = await asyncio.gather(
         _probe_qdrant(),
@@ -224,7 +238,7 @@ async def _dependency_health() -> Dict[str, Any]:
             "qdrant": "connected" if qdrant_ok else "disconnected",
             "redis": "connected" if redis_ok else "disconnected",
             "ollama_api": "connected" if ollama_ok else "disconnected",
-            "rust_acceleration": "active" if RUST_AVAILABLE_FALLBACK() else "inactive",
+            "rust_acceleration": "active" if _rust_acceleration_available() else "inactive",
         },
     }
 
@@ -425,15 +439,39 @@ class RerankResponse(BaseModel):
 
 AUTHORIZATION_HEADER = APIKeyHeader(name="Authorization", auto_error=False)
 
+
+def parse_authorization_api_key(authorization: Optional[str]) -> str:
+    """Extract an API key from an Authorization header.
+
+    Accepts ``Bearer <token>`` (scheme case-insensitive) or a raw token with no
+    scheme. Rejects empty tokens and unknown schemes so the raw header value is
+    never treated as a key when a non-Bearer scheme is present.
+    """
+    if not authorization or not authorization.strip():
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    value = authorization.strip()
+    parts = value.split(None, 1)
+    if len(parts) == 2:
+        scheme, token = parts[0], parts[1].strip()
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=401, detail="Unsupported Authorization scheme")
+        if not token:
+            raise HTTPException(status_code=401, detail="Empty Bearer token")
+        return token
+
+    # Single token: "Bearer" alone is empty; otherwise accept raw API key.
+    if value.lower() == "bearer":
+        raise HTTPException(status_code=401, detail="Empty Bearer token")
+    return value
+
+
 @app.post("/v1/rerank", response_model=RerankResponse, summary="Rerank documents")
 async def api_rerank(
     payload: RerankRequest, 
     api_key: str = Security(AUTHORIZATION_HEADER)
 ):
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    if api_key.startswith("Bearer "):
-        api_key = api_key[len("Bearer "):].strip()
+    api_key = parse_authorization_api_key(api_key)
 
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     db = get_database_adapter()
@@ -664,6 +702,12 @@ async def admin_analytics(admin_data: Dict[str, Any] = Depends(verify_admin_key)
     except Exception as e:
         logger.exception("Error getting admin analytics:")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- STRIPE WEBHOOK ---
+from gateway.stripe_webhook import router as stripe_webhook_router
+
+app.include_router(stripe_webhook_router)
 
 
 # --- REPORT ENDPOINTS ---

@@ -49,6 +49,10 @@ class DatabaseAdapter(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def set_credits(self, key_hash: str, credits: int) -> Dict[str, Any]:
+        pass
+
+    @abc.abstractmethod
     async def get_analytics(self) -> Dict[str, Any]:
         pass
 
@@ -296,6 +300,24 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                     raise ValueError("API Key not found")
                 return {"credits_remaining": row["credits_remaining"], "tokens_saved_total": row["tokens_saved_total"]}
         return await asyncio.to_thread(_update)
+
+    async def set_credits(self, key_hash: str, credits: int) -> Dict[str, Any]:
+        def _set():
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE api_keys SET credits_remaining = ? WHERE key_hash = ? RETURNING credits_remaining, tokens_saved_total",
+                    (credits, key_hash)
+                )
+                row = cursor.fetchone()
+                conn.commit()
+                if not row:
+                    raise ValueError("API Key not found")
+                return {
+                    "credits_remaining": row["credits_remaining"],
+                    "tokens_saved_total": row["tokens_saved_total"],
+                }
+        return await asyncio.to_thread(_set)
 
     async def get_analytics(self) -> Dict[str, Any]:
         def _analytics():
@@ -565,6 +587,19 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
             if not row:
                 raise ValueError("API Key not found")
             return {"credits_remaining": row["credits_remaining"], "tokens_saved_total": row["tokens_saved_total"]}
+
+    async def set_credits(self, key_hash: str, credits: int) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE api_keys SET credits_remaining = $1 WHERE key_hash = $2 RETURNING credits_remaining, tokens_saved_total",
+                credits, key_hash
+            )
+            if not row:
+                raise ValueError("API Key not found")
+            return {
+                "credits_remaining": row["credits_remaining"],
+                "tokens_saved_total": row["tokens_saved_total"],
+            }
 
     async def get_analytics(self) -> Dict[str, Any]:
         async with self.pool.acquire() as conn:

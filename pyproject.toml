@@ -59,4 +59,5 @@ python-packages = ["ses"]
 addopts = '-m "not integration"'
 markers = [
     "integration: requires the real Qdrant and Redis service stack",
+    "performance: RSS / latency harnesses (may need jas_vector_core + psutil)",
 ]

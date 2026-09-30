@@ -1,10 +1,21 @@
 """Tests for fail-closed authentication and rate limiting behavior."""
 
 import os
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+for _mod in (
+    "qdrant_client",
+    "qdrant_client.http",
+    "sentence_transformers",
+    "jas_vector_core",
+    "redis",
+    "redis.asyncio",
+):
+    sys.modules.setdefault(_mod, MagicMock())
 
 # Set DEBUG=false for fail-closed tests
 os.environ["DEBUG"] = "false"
@@ -196,21 +207,75 @@ class TestGatewayEndpointsFailClosed:
     def client(self):
         return TestClient(app)
 
-    def test_search_requires_api_key(self, client):
-        """Search endpoint should require API key."""
-        response = client.post("/api/v1/search", json={"query": "test"})
-        # Should be 401 (missing key) or 403 (invalid key) - not 200 or 500
+    def test_rerank_requires_authorization(self, client):
+        """Rerank endpoint should require Authorization header."""
+        response = client.post(
+            "/v1/rerank",
+            json={"query": "test", "documents": ["a"], "top_n": 1},
+        )
         assert response.status_code in (401, 403)
 
-    def test_ingest_requires_api_key(self, client):
-        """Ingest endpoint should require API key."""
-        response = client.post("/api/v1/ingest/text", json={"text": "test", "filename": "test.txt"})
-        assert response.status_code in (401, 403)
+    def test_rerank_rejects_invalid_key(self, client):
+        """Rerank with bogus Bearer token should be forbidden."""
+        with patch("gateway.server.get_database_adapter") as mock_db_func, \
+             patch("gateway.server.redis_available", False):
+            mock_db = MagicMock()
+            mock_db.connect = AsyncMock()
+            mock_db.bootstrap_admin_key = AsyncMock()
+            mock_db.revoke_api_key = AsyncMock(return_value=True)
+            mock_db.get_api_key = AsyncMock(return_value=None)
+            mock_db_func.return_value = mock_db
+            response = client.post(
+                "/v1/rerank",
+                json={"query": "test", "documents": ["a"], "top_n": 1},
+                headers={"Authorization": "Bearer totally_invalid_key"},
+            )
+        assert response.status_code == 403
 
     def test_admin_requires_admin_role(self, client):
         """Admin endpoints should require admin role."""
         response = client.get("/api/v1/admin/keys")
         assert response.status_code in (401, 403)
+
+
+class TestBearerParsing:
+    """Unit tests for Authorization Bearer parsing (no injection / fail-closed)."""
+
+    def test_parse_missing(self):
+        from fastapi import HTTPException
+        from gateway.server import parse_authorization_api_key
+
+        with pytest.raises(HTTPException) as exc:
+            parse_authorization_api_key(None)
+        assert exc.value.status_code == 401
+
+    def test_parse_empty_bearer(self):
+        from fastapi import HTTPException
+        from gateway.server import parse_authorization_api_key
+
+        with pytest.raises(HTTPException) as exc:
+            parse_authorization_api_key("Bearer ")
+        assert exc.value.status_code == 401
+        assert "Empty Bearer" in exc.value.detail
+
+    def test_parse_unsupported_scheme(self):
+        from fastapi import HTTPException
+        from gateway.server import parse_authorization_api_key
+
+        with pytest.raises(HTTPException) as exc:
+            parse_authorization_api_key("Basic abc")
+        assert exc.value.status_code == 401
+        assert "Unsupported" in exc.value.detail
+
+    def test_parse_case_insensitive_bearer(self):
+        from gateway.server import parse_authorization_api_key
+
+        assert parse_authorization_api_key("BeArEr my_secret_key") == "my_secret_key"
+
+    def test_parse_raw_token_without_scheme(self):
+        from gateway.server import parse_authorization_api_key
+
+        assert parse_authorization_api_key("ses_raw_token_value") == "ses_raw_token_value"
 
 
 if __name__ == "__main__":
