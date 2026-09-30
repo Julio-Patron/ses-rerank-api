@@ -1,4 +1,5 @@
 import time
+import asyncio
 from typing import List, Optional, Dict, Any
 
 from transformers import AutoTokenizer
@@ -35,12 +36,13 @@ class RerankerService:
             pairs, 
             padding=True, 
             truncation=True, 
-            return_tensors=None # Queremos listas planas para pasarlas a Rust
+            return_tensors="np" # numpy para enviar tensores con Zero-Copy a Rust
         )
 
         # Pasamos los arreglos enteros a Rust para inferencia de alto rendimiento
         # Rust devolverá una lista de tuplas [(indice, score), ...] ordenadas
-        search_results = self.engine.rerank_batch(
+        search_results = await asyncio.to_thread(
+            self.engine.rerank_batch,
             encodings["input_ids"],
             encodings["attention_mask"],
             top_n

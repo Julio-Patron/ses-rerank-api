@@ -32,43 +32,32 @@ impl CrossEncoderEngine {
         })
     }
 
-    /// Evaluates a pre-tokenized batch of query-document pairs.
-    pub fn rerank_batch(
+    pub fn rerank_batch<'py>(
         &self,
-        input_ids: Vec<Vec<i64>>,
-        attention_mask: Vec<Vec<i64>>,
+        py: Python<'py>,
+        input_ids: numpy::PyReadonlyArray2<'py, i64>,
+        attention_mask: numpy::PyReadonlyArray2<'py, i64>,
         top_k: usize,
     ) -> PyResult<Vec<(usize, f32)>> {
-        if input_ids.is_empty() {
+        let input_ids_view = input_ids.as_array();
+        let attention_mask_view = attention_mask.as_array();
+
+        if input_ids_view.is_empty() {
             return Ok(Vec::new());
         }
 
-        let batch_size = input_ids.len();
-        let seq_len = input_ids[0].len();
+        let batch_size = input_ids_view.shape()[0];
 
-        let mut all_input_ids: Vec<i64> = Vec::with_capacity(batch_size * seq_len);
-        let mut all_attention_masks: Vec<i64> = Vec::with_capacity(batch_size * seq_len);
-
-        for i in 0..batch_size {
-            if input_ids[i].len() != seq_len || attention_mask[i].len() != seq_len {
-                return Err(PyRuntimeError::new_err("All inputs in the batch must have the same sequence length (padded)."));
-            }
-            all_input_ids.extend(&input_ids[i]);
-            all_attention_masks.extend(&attention_mask[i]);
-        }
-
-        let input_ids_array = Array2::from_shape_vec((batch_size, seq_len), all_input_ids).unwrap();
-        let attention_mask_array = Array2::from_shape_vec((batch_size, seq_len), all_attention_masks).unwrap();
-
-        let input_tensor = Tensor::from_array(input_ids_array).unwrap();
-        let mask_tensor = Tensor::from_array(attention_mask_array).unwrap();
+        // Tensor::from_array can take owned Array. We can .to_owned() which is a single contiguous allocation,
+        // vastly faster than a loop appending to a Vec!
+        let input_tensor = Tensor::from_array(input_ids_view.to_owned()).unwrap();
+        let mask_tensor = Tensor::from_array(attention_mask_view.to_owned()).unwrap();
 
         let inputs = ort::inputs! {
             "input_ids" => input_tensor,
             "attention_mask" => mask_tensor,
         };
 
-        // Lock session to fulfill mutable borrow requirements
         let mut session_lock = self.session.lock().unwrap();
         let outputs = match session_lock.run(inputs) {
             Ok(o) => o,

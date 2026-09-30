@@ -315,10 +315,12 @@ async def check_rate_limit(key_data: Dict[str, Any]):
     if redis_available:
         try:
             redis_limit_key = f"gateway:rate:{api_key_hash}:{current_minute}"
-            requests_count = await redis_client.incr(redis_limit_key)
-            if requests_count == 1:
-                await redis_client.expire(redis_limit_key, 65)
+            async with redis_client.pipeline(transaction=True) as pipe:
+                pipe.incr(redis_limit_key)
+                pipe.expire(redis_limit_key, 65)
+                results = await pipe.execute()
             
+            requests_count = results[0]
             if requests_count > rate_limit:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
