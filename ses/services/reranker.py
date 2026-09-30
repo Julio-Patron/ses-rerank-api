@@ -1,11 +1,16 @@
 import time
 from typing import List, Optional, Dict, Any
-import numpy as np
 
-import jas_vector_core
-from ses.core.embeddings import get_embedding_model
+from transformers import AutoTokenizer
+from jas_vector_core import CrossEncoderEngine
 
 class RerankerService:
+    def __init__(self, model_dir: str):
+        # Cargamos el tokenizador rápido en Python
+        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        # Inicializamos la sesión ONNX en nuestro binario de Rust
+        self.engine = CrossEncoderEngine(model_dir)
+
     def _estimate_tokens(self, text: str) -> int:
         return int(round(len(text.split()) * 1.33))
 
@@ -19,30 +24,34 @@ class RerankerService:
     ) -> Dict[str, Any]:
         start_time = time.perf_counter()
 
-        if query_vector is None or document_vectors is None:
-            model = get_embedding_model()
-            if query_vector is None:
-                query_res = await model.encode([query])
-                query_vector = query_res[0] if isinstance(query_res, (list, tuple)) else query_res[0].tolist() if isinstance(query_res, np.ndarray) else query_res[0]
-            if document_vectors is None:
-                doc_res = await model.encode(documents)
-                document_vectors = doc_res if isinstance(doc_res, (list, tuple)) else doc_res.tolist() if isinstance(doc_res, np.ndarray) else doc_res
+        if not documents:
+            return {"results": [], "meta": {}}
 
-        query_array = np.array(query_vector, dtype=np.float32, order='C')
-        document_matrix = np.array(document_vectors, dtype=np.float32, order='C')
+        # Preparamos los pares (query, doc)
+        pairs = [[query, doc] for doc in documents]
+        
+        # Tokenizamos todo el lote con padding
+        encodings = self.tokenizer(
+            pairs, 
+            padding=True, 
+            truncation=True, 
+            return_tensors=None # Queremos listas planas para pasarlas a Rust
+        )
 
-        search_results = jas_vector_core.cosine_similarity_search_numpy(query_array, document_matrix, top_n)
+        # Pasamos los arreglos enteros a Rust para inferencia de alto rendimiento
+        # Rust devolverá una lista de tuplas [(indice, score), ...] ordenadas
+        search_results = self.engine.rerank_batch(
+            encodings["input_ids"],
+            encodings["attention_mask"],
+            top_n
+        )
         
         results = []
         output_docs_tokens = 0
         for item in search_results:
-            # item could be (index, score) or an object
             if isinstance(item, tuple) or isinstance(item, list):
                 idx = int(item[0])
                 score = float(item[1])
-            elif hasattr(item, 'index') and hasattr(item, 'score'):
-                idx = int(item.index)
-                score = float(item.score)
             else:
                 idx = int(item['index'])
                 score = float(item['score'])
@@ -69,7 +78,7 @@ class RerankerService:
         return {
             "results": results,
             "meta": {
-                "engine": "jas_vector_core:rust",
+                "engine": "jas_vector_core:rust_onnx_crossencoder",
                 "latency_ms": round(latency_ms, 2),
                 "input_documents_count": len(documents),
                 "returned_documents_count": len(results),

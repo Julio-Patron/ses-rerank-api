@@ -86,10 +86,26 @@ def configured_cors_origins() -> List[str]:
     return origins
 
 
+# Global instance
+reranker_service = None
+
 @asynccontextmanager
 async def gateway_lifespan(_app: FastAPI):
     """Initialize persistent Gateway state before accepting traffic."""
     global redis_available
+    global reranker_service
+    
+    # Initialize RerankerService
+    model_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "model_onnx"))
+    try:
+        if os.path.exists(model_dir):
+            reranker_service = RerankerService(model_dir)
+            logger.info("🧠 Initialized ONNX CrossEncoder Engine.")
+        else:
+            logger.warning(f"⚠️ model_onnx directory not found at {model_dir}. Reranker will not work.")
+    except Exception as e:
+        logger.error(f"❌ Failed to load RerankerService: {e}")
+
     if redis_client is not None:
         try:
             await redis_client.ping()
@@ -112,6 +128,7 @@ async def gateway_lifespan(_app: FastAPI):
 
     await db.bootstrap_admin_key(require_gateway_admin_key())
     yield
+
 
 
 app = FastAPI(
@@ -525,8 +542,10 @@ async def api_rerank(
             logger.error(f"Redis get cache error: {e}")
 
     if not result:
-        service = RerankerService()
-        result = await service.rerank(
+        if reranker_service is None:
+            raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+            
+        result = await reranker_service.rerank(
             query=payload.query,
             documents=payload.documents,
             top_n=payload.top_n

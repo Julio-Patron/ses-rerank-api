@@ -1,3 +1,5 @@
+pub mod cross_encoder;
+
 #[cfg(feature = "python")]
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 #[cfg(feature = "python")]
@@ -175,6 +177,7 @@ fn jas_vector_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         cosine_similarity_search_with_threshold,
         m
     )?)?;
+    m.add_class::<cross_encoder::CrossEncoderEngine>()?;
     Ok(())
 }
 

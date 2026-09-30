@@ -1,0 +1,24 @@
+Leí la propuesta completa. Mi opinión honesta: no la desarrollaría tal como está, porque tiene un problema técnico de fondo que afecta el negocio entero.
+
+El problema central
+Un reranker vale dinero porque usa un modelo que lee la pregunta y cada documento juntos (lo que se llama cross-encoder) y detecta relevancia que la búsqueda vectorial no ve. La propuesta hace otra cosa: similitud coseno entre vectores. Eso deja dos caminos, y ninguno funciona como producto:
+
+• Si el cliente manda texto, tu servidor tiene que generar los embeddings. Eso tarda mucho más de 10 ms y cuesta dinero, así que la promesa central de velocidad cae.
+• Si el cliente manda vectores, calcular coseno sobre 100 documentos es trivial y gratis en su propia máquina. Además, su base vectorial ya los ordenó exactamente por coseno, así que tu API repetiría lo que ya hizo.
+
+Por eso Rust no da ventaja aquí: el cálculo ya es instantáneo y no es el cuello de botella.
+
+Otros puntos débiles
+• Compites contra Cohere Rerank, Jina, Voyage y modelos gratuitos como bge-reranker, que sí son cross-encoders.
+• La cifra de "ahorras $3.50–$8 por cada $1" no tiene respaldo. El ahorro se mide contra mandar todos los documentos al LLM, algo que casi nadie hace.
+• Un SLA de 99.9% y latencia "garantizada" implican soporte 24/7 que una persona sola no puede sostener.
+• Cita GPT-4o y Claude 3.5 Sonnet, modelos ya viejos. Se nota que la propuesta fue generada sin revisar el mercado actual.
+
+Lo que sí veo valioso
+El ejemplo del documento es un contrato en español, y ahí está tu ventaja real. Una API genérica de reranking no te diferencia. Búsqueda semántica sobre derecho mexicano (LFT, LSS, INFONAVIT, que ya tienes indexados en Lex Laboral) sí. Eso encaja con tu plan de abrir una API para aliados: legaltech, despachos, contadores y software de nómina. Pocos lo tienen bien hecho en español.
+
+Siguiente paso barato antes de programar
+1. Arma 30 preguntas laborales reales y compara los resultados de SES contra un reranker gratuito como bge-reranker. Si SES pierde, lo sabes en un día y no en cuatro sprints.
+2. Habla con 5 a 10 posibles clientes (despachos, software de nómina) y pregunta si pagarían por esa búsqueda vía API.
+
+Sobre tu respuesta anterior: dejar Lex gratis hasta la adopción masiva es una estrategia válida, pero significa que hoy JAS es tu único camino a ingresos a corto plazo. Vale la pena no descuidarlo mientras exploras esto.
