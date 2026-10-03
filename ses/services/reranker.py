@@ -1,9 +1,10 @@
-import time
 import asyncio
-from typing import List, Optional, Dict, Any
+import time
+from typing import Any, Dict, List, Optional
 
-from transformers import AutoTokenizer
 from jas_vector_core import CrossEncoderEngine
+from transformers import AutoTokenizer
+
 
 class RerankerService:
     def __init__(self, model_dir: str):
@@ -45,6 +46,7 @@ class RerankerService:
             self.engine.rerank_batch,
             encodings["input_ids"],
             encodings["attention_mask"],
+            encodings["token_type_ids"],
             top_n
         )
         

@@ -1,8 +1,11 @@
+from collections.abc import Sequence
+from typing import Optional
+
 import httpx
-from typing import Any, Dict, List, Optional, Sequence
 from langchain_core.callbacks.manager import Callbacks
 from langchain_core.documents import BaseDocumentCompressor, Document
 from pydantic import ConfigDict, Field
+
 
 class SESRerankCompressor(BaseDocumentCompressor):
     """Document compressor that uses SES Rerank API to drop low relevance documents."""

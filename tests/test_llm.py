@@ -1,6 +1,9 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from ses.core.llm import LocalLLMProvider
+
 
 def test_local_llm_provider_initialization():
     provider = LocalLLMProvider(model_override="test-llama")

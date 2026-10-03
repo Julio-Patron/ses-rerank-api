@@ -6,10 +6,10 @@ and validates the production Docker Compose topology.
 """
 
 import argparse
-from pathlib import Path
 import secrets
 import subprocess
 import sys
+from pathlib import Path
 
 
 def generate_production_env(output_path: Path, force: bool = False) -> bool:

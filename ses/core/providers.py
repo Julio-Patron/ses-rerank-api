@@ -14,7 +14,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -62,24 +62,20 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for a list of texts."""
-        pass
 
     @abstractmethod
     async def embed_query(self, query: str) -> List[float]:
         """Generate embedding for a single query."""
-        pass
 
     @property
     @abstractmethod
     def dimension(self) -> int:
         """Return the embedding dimension."""
-        pass
 
     @property
     @abstractmethod
     def model_name(self) -> str:
         """Return the model name for identification."""
-        pass
 
     def is_healthy(self) -> bool:
         return self.metrics.state == ProviderState.HEALTHY

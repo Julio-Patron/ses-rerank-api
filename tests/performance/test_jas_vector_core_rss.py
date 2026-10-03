@@ -42,7 +42,7 @@ def _load_real_jas_vector_core():
         pytest.skip("jas_vector_core not built")
 
     # Reject pure MagicMock callables
-    fn = getattr(mod, "cosine_similarity_search_numpy")
+    fn = mod.cosine_similarity_search_numpy
     if isinstance(fn, MagicMock):
         pytest.skip("jas_vector_core not built (mocked)")
     return mod

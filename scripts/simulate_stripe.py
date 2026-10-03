@@ -1,6 +1,7 @@
 import asyncio
+
 import httpx
-import json
+
 
 async def simulate_stripe_webhook():
     # Simulamos un evento de checkout_session_completed

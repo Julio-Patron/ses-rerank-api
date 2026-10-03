@@ -1,8 +1,7 @@
-import os
-import json
 import logging
-import httpx
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from ses.config import OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT
 

@@ -7,6 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from ses.services.reranker import RerankerService
 
+
 async def main():
     model_dir = os.path.join(os.path.dirname(__file__), "..", "model_onnx")
     print(f"Loading from: {model_dir}")

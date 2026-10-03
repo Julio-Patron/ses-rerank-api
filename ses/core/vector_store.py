@@ -1,11 +1,11 @@
 import logging
 from collections import OrderedDict
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional, Union
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qmodels
 
-from ses.config import QDRANT_URL, QDRANT_API_KEY, VECTOR_SIZE
+from ses.config import QDRANT_API_KEY, QDRANT_URL, VECTOR_SIZE
 
 logger = logging.getLogger(__name__)
 

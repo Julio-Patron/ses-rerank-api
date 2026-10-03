@@ -1,5 +1,6 @@
-import time
 import hashlib
+import time
+
 
 def generate_rate_limit_key(client_id: str) -> str:
     current_minute = int(time.time() // 60)

@@ -37,10 +37,12 @@ impl CrossEncoderEngine {
         py: Python<'py>,
         input_ids: numpy::PyReadonlyArray2<'py, i64>,
         attention_mask: numpy::PyReadonlyArray2<'py, i64>,
+        token_type_ids: numpy::PyReadonlyArray2<'py, i64>,
         top_k: usize,
     ) -> PyResult<Vec<(usize, f32)>> {
         let input_ids_view = input_ids.as_array();
         let attention_mask_view = attention_mask.as_array();
+        let token_type_ids_view = token_type_ids.as_array();
 
         if input_ids_view.is_empty() {
             return Ok(Vec::new());
@@ -52,10 +54,12 @@ impl CrossEncoderEngine {
         // vastly faster than a loop appending to a Vec!
         let input_tensor = Tensor::from_array(input_ids_view.to_owned()).unwrap();
         let mask_tensor = Tensor::from_array(attention_mask_view.to_owned()).unwrap();
+        let type_tensor = Tensor::from_array(token_type_ids_view.to_owned()).unwrap();
 
         let inputs = ort::inputs! {
             "input_ids" => input_tensor,
             "attention_mask" => mask_tensor,
+            "token_type_ids" => type_tensor,
         };
 
         let mut session_lock = self.session.lock().unwrap();

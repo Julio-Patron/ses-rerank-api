@@ -1,8 +1,6 @@
 import os
-import json
 
 from dotenv import load_dotenv
-
 
 # Honor the documented local .env workflow without overriding process-level
 # environment variables supplied by production secret managers.

@@ -6,6 +6,28 @@ describe('Portal API Client (Contract & Integration)', () => {
   const originalFetch = global.fetch;
 
   beforeEach(() => {
+    // Mock localStorage for Vitest
+    const localStorageMock = (function () {
+      let store: Record<string, string> = {};
+      return {
+        getItem: (key: string) => store[key] || null,
+        setItem: (key: string, value: string) => {
+          store[key] = value.toString();
+        },
+        clear: () => {
+          store = {};
+        },
+        removeItem: (key: string) => {
+          delete store[key];
+        },
+      };
+    })();
+    
+    Object.defineProperty(window, 'localStorage', {
+      value: localStorageMock,
+      writable: true
+    });
+
     localStorage.clear();
     localStorage.setItem('ses_api_url', 'http://localhost:8000');
     localStorage.setItem('ses_api_key', 'ses_test_api_key_123');

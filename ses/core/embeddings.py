@@ -1,10 +1,11 @@
-import os
-import logging
 import asyncio
+import logging
+import os
+from abc import ABC, abstractmethod
+from typing import Any, List, Optional, Union
+
 import httpx
 import numpy as np
-from abc import ABC, abstractmethod
-from typing import List, Union, Any, Optional
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -27,7 +28,6 @@ class BaseEmbeddingModel(ABC):
         Returns:
             A list of floats (for single sentence) or a list of lists/numpy array (for multiple sentences).
         """
-        pass
 
 class LocalEmbeddingModel(BaseEmbeddingModel):
     """Embedding model that runs locally using SentenceTransformer."""

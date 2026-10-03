@@ -1,7 +1,9 @@
-import os
 import logging
-from fastapi import APIRouter, Request, HTTPException
+import os
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+
 from gateway.database import get_database_adapter
 
 try:

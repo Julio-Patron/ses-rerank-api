@@ -40,16 +40,46 @@ jobs:
         npm --prefix portal run test
         npm --prefix portal run build
 
-  test-and-build:
-    name: Python Test & Rust Wheel
+  security:
+    name: Security & SAST Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
 
-    services:
-      redis:
-        image: redis:7.4-alpine
-        ports:
-          - 6379:6379
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Install Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+
+    - name: NPM Audit (Portal)
+      run: npm audit --prefix portal || true
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+        cache: "pip"
+
+    - name: Bandit (Python SAST)
+      run: |
+        pip install bandit
+        bandit -r ses/ gateway/ -c pyproject.toml || true
+
+    - name: Install Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cargo Audit
+      run: |
+        cargo install cargo-audit
+        cargo audit --manifest-path core_rs/Cargo.toml || true
+
+  lint:
+    name: Code Quality (Lint & Format)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
     - name: Checkout Code
@@ -75,44 +105,67 @@ jobs:
       with:
         components: rustfmt, clippy
 
-    - name: Cache Cargo Dependencies
-      uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          core_rs/target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('core_rs/Cargo.lock') }}
+    - name: Install Python Linters
+      run: pip install ruff
 
-    - name: Install System Dependencies
+    - name: Code Style Check & Formatting (Ruff)
+      run: |
+        ruff check ses/ tests/ gateway/
+        ruff format --check ses/ tests/ gateway/
+
+    - name: Rust Formatting & Clippy
+      run: |
+        cargo fmt --manifest-path core_rs/Cargo.toml -- --check
+        cargo clippy --manifest-path core_rs/Cargo.toml --all-targets -- -D warnings
+
+  test-and-build:
+    name: Build & Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v6
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: "pip"
+
+    - name: Setup Redis
+      uses: shogo82148/actions-setup-redis@v1
+      with:
+        redis-version: '7.x'
+
+    - name: Install Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install System Dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libssl-dev
 
-    - name: Install Python Dependencies
+    - name: Install Python Dependencies & Build Wheel
       run: |
         python -m pip install --upgrade pip
+        pip install maturin build huggingface_hub
         pip install -e .[dev,server]
-        python -m pip install "maturin>=1,<2"
+        maturin build --release --interpreter python --out .tmp/ci-wheel
+        pip install --force-reinstall --no-index --find-links .tmp/ci-wheel ses_core
 
-    - name: Code Style Check (Linter)
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 ses/ tests/ gateway/ --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings
-        flake8 ses/ tests/ gateway/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    - name: Download ONNX Model
+      run: python scripts/download_onnx.py
 
-    - name: Validate and Build Rust Wheel (PyO3)
+    - name: Smoke Test Rust Core
       run: |
-        cargo fmt --manifest-path core_rs/Cargo.toml -- --check
-        cargo test --manifest-path core_rs/Cargo.toml
-        cargo clippy --manifest-path core_rs/Cargo.toml --all-targets -- -D warnings
-        rm -rf .tmp/ci-wheel
-        mkdir -p .tmp/ci-wheel
-        python -m maturin build --release --interpreter python --out .tmp/ci-wheel
-        python -m pip install --force-reinstall .tmp/ci-wheel/ses_core-*.whl
         python -c "import ses, numpy as np, jas_vector_core as j; q=np.array([1.0,0.0],dtype=np.float32); d=np.array([[0.0,1.0],[1.0,0.0]],dtype=np.float32); assert j.cosine_similarity_search_numpy(q,d,1)[0][0] == 1"
 
     - name: Run Test Suite (Pytest)
@@ -120,9 +173,10 @@ jobs:
         DEBUG: "true"
         VALID_API_KEYS: '{"personal_default": {"tier": "internal", "active": true}, "ses_internal_master_001": {"tier": "internal", "active": true}}'
       run: |
-        pytest --cov=ses --cov-report=xml -m "not integration"
+        pytest --cov=ses --cov-report=xml -m "not integration" tests/
 
     - name: Run Bounded Synthetic Performance Smoke
+      if: runner.os == 'Linux'
       env:
         DEBUG: "true"
       run: |

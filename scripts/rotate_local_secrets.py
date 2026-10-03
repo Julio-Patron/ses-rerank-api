@@ -15,7 +15,6 @@ import secrets
 import sqlite3
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 SQLITE_GATEWAY_PATH = ROOT / "data" / "gateway.db"

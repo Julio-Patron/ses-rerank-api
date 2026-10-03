@@ -1,52 +1,68 @@
-import pytest
 import sys
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-sys.modules['jas_vector_core'] = MagicMock()
+import pytest
+
+# Inject empty mocks for optional dependencies so tests don't crash
 sys.modules['qdrant_client'] = MagicMock()
 sys.modules['qdrant_client.http'] = MagicMock()
 sys.modules['sentence_transformers'] = MagicMock()
 sys.modules['redis'] = MagicMock()
 sys.modules['redis.asyncio'] = MagicMock()
+
 from ses.services.reranker import RerankerService
+
 
 @pytest.fixture
 def reranker():
-    return RerankerService()
+    with patch('ses.services.reranker.AutoTokenizer') as MockTokenizer, \
+         patch('ses.services.reranker.CrossEncoderEngine') as MockEngineClass:
+        
+        # The mock tokenizer needs to return a dictionary when called
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer_instance.return_value = {
+            "input_ids": [1, 2],
+            "attention_mask": [1, 1],
+            "token_type_ids": [0, 0]
+        }
+        MockTokenizer.from_pretrained.return_value = mock_tokenizer_instance
+        
+        mock_engine_instance = MagicMock()
+        MockEngineClass.return_value = mock_engine_instance
+
+        service = RerankerService("dummy_path")
+        # yield inside the with block so patches stay active!
+        yield service
 
 
 def test_estimate_tokens_formula(reranker):
-    assert reranker._estimate_tokens("one two three") == int(round(3 * 1.33))
+    assert reranker._estimate_tokens("one two three") == round(3 * 1.33)
     assert reranker._estimate_tokens("") == 0
-    assert reranker._estimate_tokens("single") == int(round(1 * 1.33))
+    assert reranker._estimate_tokens("single") == round(1 * 1.33)
 
 
 @pytest.mark.asyncio
-async def test_rerank_with_provided_vectors(reranker):
+async def test_rerank_calls_rust_engine_batch(reranker):
     query = "test query"
     documents = ["doc 1", "document 2 text here"]
-    query_vector = [0.1, 0.2]
-    document_vectors = [[0.1, 0.2], [0.3, 0.4]]
     
-    with patch('ses.services.reranker.jas_vector_core.cosine_similarity_search_numpy') as mock_search:
-        mock_search.return_value = [(0, 0.99), (1, 0.5)]
-        
-        result = await reranker.rerank(
-            query=query,
-            documents=documents,
-            top_n=2,
-            document_vectors=document_vectors,
-            query_vector=query_vector
-        )
-        
-        assert len(result["results"]) == 2
-        assert result["results"][0]["index"] == 0
-        assert result["results"][0]["relevance_score"] == 0.99
-        assert result["meta"]["engine"] == "jas_vector_core:rust"
-        assert "token_metrics" in result["meta"]
-        assert result["meta"]["token_metrics"]["input_tokens"] > 0
-        # top_n == all docs → no token savings
-        assert result["meta"]["token_metrics"]["saved_tokens"] == 0 
+    # Mock the Rust cross-encoder engine returning top 2 results
+    reranker.engine.rerank_batch.return_value = [(0, 0.99), (1, 0.5)]
+    
+    result = await reranker.rerank(
+        query=query,
+        documents=documents,
+        top_n=2
+    )
+    
+    assert len(result["results"]) == 2
+    assert result["results"][0]["index"] == 0
+    assert result["results"][0]["relevance_score"] == 0.99
+    assert result["meta"]["engine"] == "jas_vector_core:rust_onnx_crossencoder"
+    assert "token_metrics" in result["meta"]
+    assert result["meta"]["token_metrics"]["input_tokens"] > 0
+    # top_n == all docs -> no token savings
+    assert result["meta"]["token_metrics"]["saved_tokens"] == 0 
 
 
 @pytest.mark.asyncio
@@ -58,24 +74,20 @@ async def test_rerank_roi_token_formulas(reranker):
         "five six",
         "seven eight nine",
     ]
-    query_vector = [0.1, 0.2]
-    document_vectors = [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
 
     # Return only the middle document (index 1)
-    with patch('ses.services.reranker.jas_vector_core.cosine_similarity_search_numpy') as mock_search:
-        mock_search.return_value = [(1, 0.95)]
+    reranker.engine.rerank_batch.return_value = [(1, 0.95)]
 
-        result = await reranker.rerank(
-            query=query,
-            documents=documents,
-            top_n=1,
-            document_vectors=document_vectors,
-            query_vector=query_vector,
-        )
+    result = await reranker.rerank(
+        query=query,
+        documents=documents,
+        top_n=1
+    )
 
     query_tokens = reranker._estimate_tokens(query)
     input_docs_tokens = sum(reranker._estimate_tokens(d) for d in documents)
     output_docs_tokens = reranker._estimate_tokens(documents[1])
+    
     input_tokens = query_tokens + input_docs_tokens
     output_tokens = query_tokens + output_docs_tokens
     saved_tokens = input_tokens - output_tokens
@@ -87,31 +99,3 @@ async def test_rerank_roi_token_formulas(reranker):
     assert metrics["saved_tokens"] == saved_tokens
     assert metrics["savings_percentage"] == savings_percentage
     assert saved_tokens > 0
-
-        
-@pytest.mark.asyncio
-async def test_rerank_without_vectors(reranker):
-    query = "test query"
-    documents = ["doc 1", "document 2 text here", "a third document"]
-    
-    mock_model = AsyncMock()
-    mock_model.encode.side_effect = [
-        [[0.1, 0.2]], # query
-        [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]] # documents
-    ]
-    
-    with patch('ses.services.reranker.get_embedding_model', return_value=mock_model), \
-         patch('ses.services.reranker.jas_vector_core.cosine_similarity_search_numpy') as mock_search:
-        
-        mock_search.return_value = [(1, 0.8)]
-        
-        result = await reranker.rerank(
-            query=query,
-            documents=documents,
-            top_n=1
-        )
-        
-        assert len(result["results"]) == 1
-        assert result["results"][0]["index"] == 1
-        assert mock_model.encode.call_count == 2
-        assert result["meta"]["token_metrics"]["saved_tokens"] > 0

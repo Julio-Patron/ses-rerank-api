@@ -1,7 +1,10 @@
 import os
 import time
-import requests
+
 import pytest
+import requests
+
+pytestmark = pytest.mark.integration
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://localhost:8000")
 ADMIN_KEY = os.getenv("GATEWAY_ADMIN_KEY", "test_admin_key_12345678901234567890")

@@ -7,14 +7,23 @@ use pyo3::exceptions::PyValueError;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
-pub fn cosine_similarity_scores_from_slices<'a>(
+use rayon::prelude::*;
+
+pub fn cosine_similarity_scores_from_flat_slice(
     query_vector: &[f32],
-    document_vectors: impl IntoIterator<Item = &'a [f32]>,
+    document_vectors: &[f32],
+    dimensions: usize,
     top_k: usize,
     threshold: Option<f32>,
 ) -> Result<Vec<(usize, f32)>, String> {
     if query_vector.is_empty() {
         return Err("query_vector must not be empty".to_string());
+    }
+    if query_vector.len() != dimensions {
+        return Err("query_vector length must match dimensions".to_string());
+    }
+    if document_vectors.len() % dimensions != 0 {
+        return Err("document_vectors length must be a multiple of dimensions".to_string());
     }
     if query_vector.iter().any(|value| !value.is_finite()) {
         return Err("query_vector must contain only finite values".to_string());
@@ -26,44 +35,38 @@ pub fn cosine_similarity_scores_from_slices<'a>(
         return Ok(Vec::new());
     }
 
-    let expected_dimensions = query_vector.len();
     let query_norm = query_vector
         .iter()
         .map(|value| value * value)
         .sum::<f32>()
         .sqrt();
-    let mut scores = Vec::new();
 
-    for (index, document) in document_vectors.into_iter().enumerate() {
-        if document.len() != expected_dimensions {
-            return Err(format!(
-                "document vector {index} has {} dimensions; expected {expected_dimensions}",
-                document.len()
-            ));
-        }
-        if document.iter().any(|value| !value.is_finite()) {
-            return Err(format!(
-                "document vector {index} must contain only finite values"
-            ));
-        }
-
-        let (dot_product, document_squared_norm) = query_vector
-            .iter()
-            .zip(document)
-            .fold((0.0_f32, 0.0_f32), |(dot, norm), (query, value)| {
-                (dot + query * value, norm + value * value)
-            });
-        let document_norm = document_squared_norm.sqrt();
-        let score = if query_norm > 0.0 && document_norm > 0.0 {
-            dot_product / (query_norm * document_norm)
-        } else {
-            0.0
-        };
-
-        if threshold.is_none_or(|minimum| score >= minimum) {
-            scores.push((index, score));
-        }
-    }
+    let mut scores: Vec<(usize, f32)> = document_vectors
+        .par_chunks(dimensions)
+        .enumerate()
+        .filter_map(|(index, document)| {
+            if document.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            let (dot_product, document_squared_norm) = query_vector
+                .iter()
+                .zip(document)
+                .fold((0.0_f32, 0.0_f32), |(dot, norm), (query, value)| {
+                    (dot + query * value, norm + value * value)
+                });
+            let document_norm = document_squared_norm.sqrt();
+            let score = if query_norm > 0.0 && document_norm > 0.0 {
+                dot_product / (query_norm * document_norm)
+            } else {
+                0.0
+            };
+            if threshold.is_none_or(|minimum| score >= minimum) {
+                Some((index, score))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     scores.sort_by(|left, right| right.1.total_cmp(&left.1));
     scores.truncate(top_k);
@@ -76,12 +79,56 @@ pub fn cosine_similarity_scores(
     top_k: usize,
     threshold: Option<f32>,
 ) -> Result<Vec<(usize, f32)>, String> {
-    cosine_similarity_scores_from_slices(
-        query_vector,
-        document_vectors.iter().map(Vec::as_slice),
-        top_k,
-        threshold,
-    )
+    if query_vector.is_empty() {
+        return Err("query_vector must not be empty".to_string());
+    }
+    let expected_dimensions = query_vector.len();
+    if query_vector.iter().any(|value| !value.is_finite()) {
+        return Err("query_vector must contain only finite values".to_string());
+    }
+    if threshold.is_some_and(|value| !value.is_finite()) {
+        return Err("threshold must be finite".to_string());
+    }
+    if top_k == 0 {
+        return Ok(Vec::new());
+    }
+
+    let query_norm = query_vector
+        .iter()
+        .map(|value| value * value)
+        .sum::<f32>()
+        .sqrt();
+
+    let mut scores: Vec<(usize, f32)> = document_vectors
+        .par_iter()
+        .enumerate()
+        .filter_map(|(index, document)| {
+            if document.len() != expected_dimensions || document.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            let (dot_product, document_squared_norm) = query_vector
+                .iter()
+                .zip(document)
+                .fold((0.0_f32, 0.0_f32), |(dot, norm), (query, value)| {
+                    (dot + query * value, norm + value * value)
+                });
+            let document_norm = document_squared_norm.sqrt();
+            let score = if query_norm > 0.0 && document_norm > 0.0 {
+                dot_product / (query_norm * document_norm)
+            } else {
+                0.0
+            };
+            if threshold.is_none_or(|minimum| score >= minimum) {
+                Some((index, score))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scores.sort_by(|left, right| right.1.total_cmp(&left.1));
+    scores.truncate(top_k);
+    Ok(scores)
 }
 
 #[cfg(feature = "python")]
@@ -90,7 +137,7 @@ fn as_python_value_error(error: String) -> PyErr {
 }
 
 /// Calcula la similitud de coseno entre un vector de consulta y una matriz de documentos.
-/// Retorna los \u00edndices y scores ordenados de mayor a menor relevancia.
+/// Retorna los índices y scores ordenados de mayor a menor relevancia.
 #[cfg(feature = "python")]
 #[pyfunction]
 fn cosine_similarity_search(
@@ -115,13 +162,7 @@ fn cosine_similarity_search_numpy(
         .map_err(|_| PyValueError::new_err("query_vector must be C-contiguous"))?;
     let shape = document_vectors.shape();
     if shape[0] == 0 {
-        return cosine_similarity_scores_from_slices(
-            query,
-            std::iter::empty::<&[f32]>(),
-            top_k,
-            None,
-        )
-        .map_err(as_python_value_error);
+        return Ok(Vec::new());
     }
     if shape[1] != query.len() {
         return Err(PyValueError::new_err(format!(
@@ -134,7 +175,7 @@ fn cosine_similarity_search_numpy(
     let documents = document_vectors
         .as_slice()
         .map_err(|_| PyValueError::new_err("document_vectors must be C-contiguous"))?;
-    cosine_similarity_scores_from_slices(query, documents.chunks(shape[1]), top_k, None)
+    cosine_similarity_scores_from_flat_slice(query, documents, shape[1], top_k, None)
         .map_err(as_python_value_error)
 }
 
@@ -166,7 +207,7 @@ fn cosine_similarity_search_with_threshold(
         .map_err(as_python_value_error)
 }
 
-/// M\u00f3dulo Python expuesto
+/// Módulo Python expuesto
 #[cfg(feature = "python")]
 #[pymodule]
 fn jas_vector_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -192,9 +233,7 @@ mod tests {
     #[test]
     fn ranks_by_cosine_similarity_and_respects_top_k() {
         let documents = vec![vec![0.0, 1.0], vec![1.0, 0.0], vec![-1.0, 0.0]];
-
         let scores = cosine_similarity_scores(&[1.0, 0.0], &documents, 2, None).unwrap();
-
         assert_eq!(scores.len(), 2);
         assert_eq!(scores[0].0, 1);
         assert_close(scores[0].1, 1.0);
@@ -205,9 +244,7 @@ mod tests {
     #[test]
     fn filters_by_threshold() {
         let documents = vec![vec![1.0, 0.0], vec![0.8, 0.6], vec![0.0, 1.0]];
-
         let scores = cosine_similarity_scores(&[1.0, 0.0], &documents, 10, Some(0.75)).unwrap();
-
         assert_eq!(scores.len(), 2);
         assert_eq!(scores[0].0, 0);
         assert_eq!(scores[1].0, 1);
@@ -216,19 +253,17 @@ mod tests {
     #[test]
     fn handles_zero_vectors_and_empty_documents() {
         let zero_scores =
-            cosine_similarity_scores(&[0.0, 0.0], &[vec![1.0, 0.0]], 5, None).unwrap();
-        let empty_scores = cosine_similarity_scores(&[1.0], &[], 5, Some(0.5)).unwrap();
-
+            cosine_similarity_scores(&[0.0, 0.0], &vec![vec![1.0, 0.0]], 5, None).unwrap();
+        let empty_scores = cosine_similarity_scores(&[1.0], &vec![], 5, Some(0.5)).unwrap();
         assert_close(zero_scores[0].1, 0.0);
         assert!(empty_scores.is_empty());
     }
 
     #[test]
     fn rejects_invalid_dimensions_and_non_finite_values() {
-        let dimensions = cosine_similarity_scores(&[1.0, 0.0], &[vec![1.0]], 5, None).unwrap_err();
-        let query = cosine_similarity_scores(&[], &[], 5, None).unwrap_err();
-        let finite = cosine_similarity_scores(&[f32::NAN], &[vec![1.0]], 5, None).unwrap_err();
-
+        let dimensions = cosine_similarity_scores(&[1.0, 0.0], &vec![vec![1.0]], 5, None).unwrap_err();
+        let query = cosine_similarity_scores(&[], &vec![], 5, None).unwrap_err();
+        let finite = cosine_similarity_scores(&[f32::NAN], &vec![vec![1.0]], 5, None).unwrap_err();
         assert!(dimensions.contains("expected 2"));
         assert!(query.contains("must not be empty"));
         assert!(finite.contains("finite"));

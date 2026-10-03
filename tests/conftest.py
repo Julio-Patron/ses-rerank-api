@@ -2,7 +2,7 @@
 
 import os
 import sys
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -70,7 +70,7 @@ def mock_external_dependencies(request):
     patches = []
     # Only patch modules that still exist after the SaaS extract.
     try:
-        import ses.core.vector_store  # noqa: F401
+        import ses.core.vector_store
 
         patches.append(
             patch("ses.core.vector_store.AsyncQdrantClient", return_value=mock_qdrant)

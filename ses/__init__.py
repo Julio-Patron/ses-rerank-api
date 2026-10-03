@@ -3,7 +3,7 @@ SES Core — Offline-First RAG & Document Intelligence Platform.
 """
 
 import os
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 _default_engine = None
 
@@ -90,10 +90,10 @@ def __getattr__(name: str):
 
 
 __all__ = [
-    "OfflineRAGEngine",
     "LocalLLMProvider",
+    "OfflineRAGEngine",
+    "get_engine",
+    "ingest",
     "mount",
     "search",
-    "ingest",
-    "get_engine",
 ]

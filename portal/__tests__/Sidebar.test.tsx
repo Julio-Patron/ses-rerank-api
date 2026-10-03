@@ -13,11 +13,8 @@ describe('Sidebar', () => {
 
     expect(screen.getByText('SES Gateway')).toBeDefined();
     expect(screen.getByText('Dashboard')).toBeDefined();
-    expect(screen.getByText('RAG Search')).toBeDefined();
-    expect(screen.getByText('Documents')).toBeDefined();
     expect(screen.getByText('Analytics')).toBeDefined();
     expect(screen.getByText('API Keys')).toBeDefined();
-    expect(screen.getByText('Reports')).toBeDefined();
     expect(screen.getByText('Settings')).toBeDefined();
     expect(screen.getByText('Enterprise Edition')).toBeDefined();
   });

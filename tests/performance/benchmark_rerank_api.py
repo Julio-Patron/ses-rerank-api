@@ -1,10 +1,11 @@
 import asyncio
-import time
-import httpx
 import statistics
+import time
+
+import httpx
 
 # Constantes de la prueba
-ENDPOINT_URL = "http://localhost:8001/v1/rerank"
+ENDPOINT_URL = "http://127.0.0.1:8001/v1/rerank"
 CONCURRENT_USERS = 50
 DOCUMENTS_PER_REQUEST = 20
 
@@ -17,7 +18,7 @@ TEST_DOCUMENTS = [
 
 async def setup_api_key(client: httpx.AsyncClient) -> str:
     headers = {"X-API-Key": "test_admin_key_12345678901234567890"}
-    res = await client.post("http://localhost:8001/api/v1/admin/keys", json={"credits": 999999, "name": "bench"}, headers=headers)
+    res = await client.post("http://127.0.0.1:8001/api/v1/admin/keys", json={"credits": 999999, "name": "bench"}, headers=headers)
     if res.status_code == 200:
         return res.json()["key"]
     raise RuntimeError(f"Failed to create key: {res.text}")

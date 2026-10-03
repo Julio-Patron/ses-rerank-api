@@ -66,6 +66,9 @@ def stripe_client():
     mock_db.set_credits = AsyncMock(
         return_value={"credits_remaining": 100000, "tokens_saved_total": 0}
     )
+    mock_db.process_stripe_event = AsyncMock(
+        return_value={"status": "created", "key_prefix": "ses_abc123", "credits_remaining": 100000}
+    )
 
     fake_event = {
         "type": "checkout.session.completed",
@@ -107,10 +110,10 @@ def test_stripe_checkout_assigns_100000_credits(stripe_client):
     )
     assert response.status_code == 200
     assert response.json()["status"] == "success"
-    mock_db.set_credits.assert_awaited_once()
-    args = mock_db.set_credits.await_args.args
-    assert args[0] == created["key_hash"]
-    assert args[1] == 100000
+    mock_db.process_stripe_event.assert_awaited_once()
+    kwargs = mock_db.process_stripe_event.await_args.kwargs
+    assert kwargs["customer_email"] == "buyer@example.com"
+    assert kwargs["credits_to_add"] == 100000
 
 
 def test_stripe_unconfigured_returns_503(monkeypatch):

@@ -85,7 +85,9 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
         logger.info(f"📂 SQLite persistent storage loaded at: {self.db_path}")
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=15.0)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -898,7 +900,6 @@ def get_database_adapter() -> DatabaseAdapter:
             try:
                 adapter = PostgresDatabaseAdapter()
                 # Run synchronous validation of import / initialization
-                import asyncpg
                 _db_adapter = adapter
             except Exception as e:
                 logger.warning(f"⚠️ Failed to import asyncpg or setup postgres: {e}. Defaulting to SQLite.")

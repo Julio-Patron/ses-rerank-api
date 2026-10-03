@@ -2,8 +2,9 @@
 
 import os
 import sys
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -26,12 +27,10 @@ os.environ["REDIS_PASSWORD"] = "test_pass"
 
 from gateway.server import (
     app,
-    get_api_key_details,
     check_rate_limit,
-    require_gateway_admin_key,
     configured_cors_origins,
-    redis_available,
-    redis_client,
+    get_api_key_details,
+    require_gateway_admin_key,
 )
 
 
@@ -243,6 +242,7 @@ class TestBearerParsing:
 
     def test_parse_missing(self):
         from fastapi import HTTPException
+
         from gateway.server import parse_authorization_api_key
 
         with pytest.raises(HTTPException) as exc:
@@ -251,6 +251,7 @@ class TestBearerParsing:
 
     def test_parse_empty_bearer(self):
         from fastapi import HTTPException
+
         from gateway.server import parse_authorization_api_key
 
         with pytest.raises(HTTPException) as exc:
@@ -260,6 +261,7 @@ class TestBearerParsing:
 
     def test_parse_unsupported_scheme(self):
         from fastapi import HTTPException
+
         from gateway.server import parse_authorization_api_key
 
         with pytest.raises(HTTPException) as exc:

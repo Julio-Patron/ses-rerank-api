@@ -1,8 +1,9 @@
+import hashlib
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+
 import pytest
-import hashlib
-from unittest.mock import MagicMock, AsyncMock, create_autospec, patch
 from fastapi.testclient import TestClient
 
 # Inject parent directory path to import 'ses' and 'gateway'
@@ -193,6 +194,7 @@ def mock_gateway_services():
         mock_instance = AsyncMock()
         mock_instance.rerank.return_value = RERANK_MOCK_RESULT
         mock_reranker_class.return_value = mock_instance
+        server_module.reranker_service = mock_instance
 
         yield mock_db, mock_instance
 

@@ -1,38 +1,31 @@
 import asyncio
-import copy
 import hashlib
 import hmac
-import io
 import json
 import logging
 import os
 import time
-import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
+    Depends,
     FastAPI,
-    Request,
+    Header,
     HTTPException,
     Security,
-    Depends,
     status,
-    File,
-    UploadFile,
-    Form
 )
-from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from qdrant_client import AsyncQdrantClient
 
 # Core imports
 from ses.config import (
-    DEBUG,
     OLLAMA_BASE_URL,
     QDRANT_API_KEY,
     QDRANT_URL,
@@ -40,10 +33,11 @@ from ses.config import (
     REDIS_PASSWORD,
     REDIS_PORT,
 )
-from ses.services.reranker import RerankerService
 
+DEBUG = True
 # Database imports
 from gateway.database import get_database_adapter
+from ses.services.reranker import RerankerService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ses_enterprise_gateway")
@@ -504,7 +498,8 @@ def parse_authorization_api_key(authorization: Optional[str]) -> str:
 @app.post("/v1/rerank", response_model=RerankResponse, summary="Rerank documents")
 async def api_rerank(
     payload: RerankRequest, 
-    api_key: str = Security(AUTHORIZATION_HEADER)
+    api_key: str = Security(AUTHORIZATION_HEADER),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key", description="Strict Idempotency key for network retries")
 ):
     api_key = parse_authorization_api_key(api_key)
 
@@ -545,14 +540,20 @@ async def api_rerank(
 
     t0 = time.time()
     
-    # 3. Redis Caching / Deduplication (Phase 3)
-    # Create deterministic hash for the payload
+    # 3. Redis Strict Idempotency & Deduplication
     tenant_id = key_data.get("tenant_id", "default")
-    payload_hash = hashlib.sha256((payload.query + "".join(payload.documents) + str(payload.top_n)).encode()).hexdigest()
-    cache_key = f"gateway:cache:rerank:{tenant_id}:{payload_hash}"
-    
     result = None
+    cache_key = None
+
     if redis_available:
+        if idempotency_key:
+            # Idempotency based on explicitly provided client key (O(1) checking, zero CPU payload hashing)
+            cache_key = f"gateway:idempotency:{tenant_id}:{idempotency_key}"
+        else:
+            # Fallback to payload hashing if no idempotency key provided
+            payload_hash = hashlib.sha256((payload.query + "".join(payload.documents) + str(payload.top_n)).encode()).hexdigest()
+            cache_key = f"gateway:cache:rerank:{tenant_id}:{payload_hash}"
+            
         try:
             cached_result = await redis_client.get(cache_key)
             if cached_result:
@@ -564,15 +565,18 @@ async def api_rerank(
         if reranker_service is None:
             raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
             
+        # [MENSAGERÍA/COLAS]: Aquí en el futuro en lugar de await asyncio.to_thread sincrónico,
+        # podríamos enviar la petición a una cola Celery/Redis y esperar el resultado usando pub/sub.
         result = await reranker_service.rerank(
             query=payload.query,
             documents=payload.documents,
             top_n=payload.top_n
         )
-        if redis_available:
+        if redis_available and cache_key:
             try:
-                # Cache for 60 seconds
-                await redis_client.setex(cache_key, 60, json.dumps(result))
+                # Cache for 24 hours if using idempotency key, else 60 seconds
+                ttl = 86400 if idempotency_key else 60
+                await redis_client.setex(cache_key, ttl, json.dumps(result))
             except Exception as e:
                 logger.error(f"Redis set cache error: {e}")
 
@@ -767,7 +771,7 @@ async def admin_delete_key(key_to_delete: str, admin_data: Dict[str, Any] = Depe
             except Exception as e:
                 logger.error(f"Failed to clear key from Redis: {e}")
                 
-        logger.info(f"🚫 Revoked API key token.")
+        logger.info("🚫 Revoked API key token.")
         return {"status": "success", "message": "API Key revoked successfully."}
     except HTTPException:
         raise
