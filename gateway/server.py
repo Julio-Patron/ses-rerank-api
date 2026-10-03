@@ -567,17 +567,50 @@ async def api_rerank(
             logger.error(f"Redis get cache error: {e}")
 
     if not result:
-        if reranker_service is None:
-            raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+        if redis_available:
+            import uuid
+            task_id = str(uuid.uuid4())
+            task_payload = payload.model_dump(mode='json') if hasattr(payload, 'model_dump') else payload.dict()
+            task_payload["task_id"] = task_id
             
-        # [MENSAGERÍA/COLAS]: Aquí en el futuro en lugar de await asyncio.to_thread sincrónico,
-        # podríamos enviar la petición a una cola Celery/Redis y esperar el resultado usando pub/sub.
-        result = await reranker_service.rerank(
-            query=payload.query,
-            documents=payload.documents,
-            top_n=payload.top_n,
-            jsonlogic_filter=payload.jsonlogic_filter
-        )
+            try:
+                # Send task to worker queue
+                await redis_client.rpush("ses_rerank_queue", json.dumps(task_payload))
+                
+                # Block until worker replies (Timeout after 30s)
+                response_key = f"ses_rerank_result:{task_id}"
+                queue_result = await redis_client.blpop([response_key], timeout=30)
+                
+                if queue_result is None:
+                    raise HTTPException(status_code=504, detail="Reranking worker timeout")
+                
+                _, result_json = queue_result
+                result = json.loads(result_json)
+                
+                if "error" in result:
+                    raise HTTPException(status_code=500, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Redis queue error: {e}")
+                if isinstance(e, HTTPException):
+                    raise
+                # Fallback
+                if reranker_service is None:
+                    raise HTTPException(status_code=500, detail="Queue failed and local engine not available")
+                result = await reranker_service.rerank(
+                    query=payload.query,
+                    documents=payload.documents,
+                    top_n=payload.top_n,
+                    jsonlogic_filter=payload.jsonlogic_filter
+                )
+        else:
+            if reranker_service is None:
+                raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+            result = await reranker_service.rerank(
+                query=payload.query,
+                documents=payload.documents,
+                top_n=payload.top_n,
+                jsonlogic_filter=payload.jsonlogic_filter
+            )
         if redis_available and cache_key:
             try:
                 # Cache for 24 hours if using idempotency key, else 60 seconds
