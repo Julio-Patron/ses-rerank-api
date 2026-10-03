@@ -7,7 +7,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
     Depends,
@@ -423,16 +423,21 @@ class APIKeyCreatePayload(BaseModel):
     rate_limit: int = Field(60, description="Maximum requests per minute")
     role: str = Field("client", description="Security role (admin or client)")
 
+class DocumentObj(BaseModel):
+    text: str
+    metadata: Optional[Dict[str, Any]] = None
+
 class RerankRequest(BaseModel):
     query: str = Field(..., description="Query string for reranking")
-    documents: List[str] = Field(..., description="List of documents to rerank")
+    documents: List[Union[str, DocumentObj]] = Field(..., description="List of documents to rerank")
     top_n: int = Field(5, description="Number of top documents to return")
     return_documents: bool = Field(True, description="Whether to include documents in response")
+    jsonlogic_filter: Optional[Dict[str, Any]] = Field(None, description="Optional JSONLogic rule to pre-filter documents by their metadata")
 
 class RerankDocumentResult(BaseModel):
     index: int
     relevance_score: float
-    document: Optional[str] = None
+    document: Optional[Union[str, DocumentObj]] = None
 
 class RerankTokenMetrics(BaseModel):
     total_tokens: int
@@ -570,7 +575,8 @@ async def api_rerank(
         result = await reranker_service.rerank(
             query=payload.query,
             documents=payload.documents,
-            top_n=payload.top_n
+            top_n=payload.top_n,
+            jsonlogic_filter=payload.jsonlogic_filter
         )
         if redis_available and cache_key:
             try:

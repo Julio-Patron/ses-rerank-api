@@ -1,6 +1,7 @@
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+import json
+from typing import Any, Dict, List, Optional, Union
 
 from jas_vector_core import CrossEncoderEngine
 from transformers import AutoTokenizer
@@ -19,29 +20,76 @@ class RerankerService:
     async def rerank(
         self,
         query: str,
-        documents: List[str],
+        documents: List[Union[str, Dict[str, Any]]],
         top_n: int,
         document_vectors: Optional[List[List[float]]] = None,
-        query_vector: Optional[List[float]] = None
+        query_vector: Optional[List[float]] = None,
+        jsonlogic_filter: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         start_time = time.perf_counter()
 
         if not documents:
             return {"results": [], "meta": {}}
 
-        # Preparamos los pares (query, doc)
-        pairs = [[query, doc] for doc in documents]
+        # Parse text and metadata from documents
+        doc_texts = []
+        doc_metadata_json = []
+        for doc in documents:
+            if isinstance(doc, str):
+                doc_texts.append(doc)
+                doc_metadata_json.append("{}")
+            else:
+                doc_texts.append(doc.text)
+                metadata = doc.metadata or {}
+                doc_metadata_json.append(json.dumps(metadata) if metadata else "{}")
         
-        # Tokenizamos todo el lote con padding
+        # Apply JSONLogic filter if provided
+        if jsonlogic_filter:
+            import jas_vector_core
+            rule_str = json.dumps(jsonlogic_filter)
+            try:
+                # filter_metadata is executed in a background thread
+                passed_indices = await asyncio.to_thread(
+                    jas_vector_core.filter_metadata,
+                    rule_str,
+                    doc_metadata_json
+                )
+            except Exception as e:
+                raise ValueError(f"JSONLogic Error: {e}")
+        else:
+            passed_indices = list(range(len(documents)))
+            
+        print(f"DEBUG: rule={jsonlogic_filter}, metadata={doc_metadata_json}, passed={passed_indices}")
+
+        if not passed_indices:
+            return {
+                "results": [],
+                "meta": {
+                    "engine": "jas_vector_core:rust_onnx_crossencoder",
+                    "latency_ms": round((time.perf_counter() - start_time) * 1000.0, 2),
+                    "input_documents_count": len(documents),
+                    "returned_documents_count": 0,
+                    "token_metrics": {
+                        "input_tokens": self._estimate_tokens(query) + sum(self._estimate_tokens(d) for d in doc_texts),
+                        "output_tokens": 0,
+                        "saved_tokens": self._estimate_tokens(query) + sum(self._estimate_tokens(d) for d in doc_texts),
+                        "savings_percentage": 100.0
+                    }
+                }
+            }
+
+        # Prepare pairs only for documents that passed the filter
+        pairs = [[query, doc_texts[i]] for i in passed_indices]
+        
+        # Tokenize only the filtered batch
         encodings = self.tokenizer(
             pairs, 
             padding=True, 
             truncation=True, 
-            return_tensors="np" # numpy para enviar tensores con Zero-Copy a Rust
+            return_tensors="np" # numpy for zero-copy to Rust
         )
 
-        # Pasamos los arreglos enteros a Rust para inferencia de alto rendimiento
-        # Rust devolverá una lista de tuplas [(indice, score), ...] ordenadas
+        # Run high performance inference in Rust
         search_results = await asyncio.to_thread(
             self.engine.rerank_batch,
             encodings["input_ids"],
@@ -54,25 +102,28 @@ class RerankerService:
         output_docs_tokens = 0
         for item in search_results:
             if isinstance(item, tuple) or isinstance(item, list):
-                idx = int(item[0])
+                local_idx = int(item[0])
                 score = float(item[1])
             else:
-                idx = int(item['index'])
+                local_idx = int(item['index'])
                 score = float(item['score'])
 
-            doc_text = documents[idx]
-            output_docs_tokens += self._estimate_tokens(doc_text)
+            # Map the local index back to the original index
+            original_idx = passed_indices[local_idx]
+            doc_obj = documents[original_idx]
+            
+            output_docs_tokens += self._estimate_tokens(doc_texts[original_idx])
             results.append({
-                "index": idx,
+                "index": original_idx,
                 "relevance_score": score,
-                "document": doc_text
+                "document": doc_obj
             })
 
         end_time = time.perf_counter()
         latency_ms = (end_time - start_time) * 1000.0
 
         query_tokens = self._estimate_tokens(query)
-        input_docs_tokens = sum(self._estimate_tokens(doc) for doc in documents)
+        input_docs_tokens = sum(self._estimate_tokens(doc_text) for doc_text in doc_texts)
         
         input_tokens = query_tokens + input_docs_tokens
         output_tokens = query_tokens + output_docs_tokens
