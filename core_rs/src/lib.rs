@@ -1,4 +1,7 @@
 pub mod cross_encoder;
+pub mod jsonlogic_filter;
+
+
 
 #[cfg(feature = "python")]
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -136,6 +139,13 @@ fn as_python_value_error(error: String) -> PyErr {
     PyValueError::new_err(error)
 }
 
+#[cfg(feature = "python")]
+#[pyfunction]
+fn filter_metadata(rule_str: &str, metadata_json_strings: Vec<String>) -> PyResult<Vec<usize>> {
+    jsonlogic_filter::filter_by_jsonlogic(rule_str, &metadata_json_strings)
+        .map_err(as_python_value_error)
+}
+
 /// Calcula la similitud de coseno entre un vector de consulta y una matriz de documentos.
 /// Retorna los índices y scores ordenados de mayor a menor relevancia.
 #[cfg(feature = "python")]
@@ -214,6 +224,7 @@ fn jas_vector_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cosine_similarity_search, m)?)?;
     m.add_function(wrap_pyfunction!(cosine_similarity_search_numpy, m)?)?;
     m.add_function(wrap_pyfunction!(batch_cosine_search, m)?)?;
+    m.add_function(wrap_pyfunction!(filter_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(
         cosine_similarity_search_with_threshold,
         m

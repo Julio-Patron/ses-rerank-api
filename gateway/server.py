@@ -7,7 +7,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import (
     Depends,
@@ -423,16 +423,21 @@ class APIKeyCreatePayload(BaseModel):
     rate_limit: int = Field(60, description="Maximum requests per minute")
     role: str = Field("client", description="Security role (admin or client)")
 
+class DocumentObj(BaseModel):
+    text: str
+    metadata: Optional[Dict[str, Any]] = None
+
 class RerankRequest(BaseModel):
     query: str = Field(..., description="Query string for reranking")
-    documents: List[str] = Field(..., description="List of documents to rerank")
+    documents: List[Union[str, DocumentObj]] = Field(..., description="List of documents to rerank")
     top_n: int = Field(5, description="Number of top documents to return")
     return_documents: bool = Field(True, description="Whether to include documents in response")
+    jsonlogic_filter: Optional[Dict[str, Any]] = Field(None, description="Optional JSONLogic rule to pre-filter documents by their metadata")
 
 class RerankDocumentResult(BaseModel):
     index: int
     relevance_score: float
-    document: Optional[str] = None
+    document: Optional[Union[str, DocumentObj]] = None
 
 class RerankTokenMetrics(BaseModel):
     total_tokens: int
@@ -562,16 +567,50 @@ async def api_rerank(
             logger.error(f"Redis get cache error: {e}")
 
     if not result:
-        if reranker_service is None:
-            raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+        if redis_available:
+            import uuid
+            task_id = str(uuid.uuid4())
+            task_payload = payload.model_dump(mode='json') if hasattr(payload, 'model_dump') else payload.dict()
+            task_payload["task_id"] = task_id
             
-        # [MENSAGERÍA/COLAS]: Aquí en el futuro en lugar de await asyncio.to_thread sincrónico,
-        # podríamos enviar la petición a una cola Celery/Redis y esperar el resultado usando pub/sub.
-        result = await reranker_service.rerank(
-            query=payload.query,
-            documents=payload.documents,
-            top_n=payload.top_n
-        )
+            try:
+                # Send task to worker queue
+                await redis_client.rpush("ses_rerank_queue", json.dumps(task_payload))
+                
+                # Block until worker replies (Timeout after 30s)
+                response_key = f"ses_rerank_result:{task_id}"
+                queue_result = await redis_client.blpop([response_key], timeout=30)
+                
+                if queue_result is None:
+                    raise HTTPException(status_code=504, detail="Reranking worker timeout")
+                
+                _, result_json = queue_result
+                result = json.loads(result_json)
+                
+                if "error" in result:
+                    raise HTTPException(status_code=500, detail=result["error"])
+            except Exception as e:
+                logger.error(f"Redis queue error: {e}")
+                if isinstance(e, HTTPException):
+                    raise
+                # Fallback
+                if reranker_service is None:
+                    raise HTTPException(status_code=500, detail="Queue failed and local engine not available")
+                result = await reranker_service.rerank(
+                    query=payload.query,
+                    documents=payload.documents,
+                    top_n=payload.top_n,
+                    jsonlogic_filter=payload.jsonlogic_filter
+                )
+        else:
+            if reranker_service is None:
+                raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+            result = await reranker_service.rerank(
+                query=payload.query,
+                documents=payload.documents,
+                top_n=payload.top_n,
+                jsonlogic_filter=payload.jsonlogic_filter
+            )
         if redis_available and cache_key:
             try:
                 # Cache for 24 hours if using idempotency key, else 60 seconds
