@@ -1,6 +1,6 @@
 [package]
 name = "jas_vector_core"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Julio Patron <juliopc92@gmail.com>"]
 description = "High-performance vector cosine similarity search and re-ranking core in Rust with PyO3 bindings"

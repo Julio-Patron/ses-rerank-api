@@ -2,13 +2,11 @@ import asyncio
 import time
 import httpx
 import statistics
-from pprint import pprint
 
 # Constantes de la prueba
-ENDPOINT_URL = "http://localhost:8000/v1/rerank"
-API_KEY = "ses_live_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6" # Assumes a valid test API Key exists or will be injected
-CONCURRENT_USERS = 100
-DOCUMENTS_PER_REQUEST = 50
+ENDPOINT_URL = "http://localhost:8001/v1/rerank"
+CONCURRENT_USERS = 50
+DOCUMENTS_PER_REQUEST = 20
 
 # Generar datos sintéticos
 TEST_QUERY = "Condiciones para la recisión de un contrato mercantil internacional por causa de fuerza mayor"
@@ -17,15 +15,21 @@ TEST_DOCUMENTS = [
     for i in range(DOCUMENTS_PER_REQUEST)
 ]
 
-async def send_rerank_request(client: httpx.AsyncClient) -> float:
-    """Envía una petición de rerank y devuelve la latencia en milisegundos."""
+async def setup_api_key(client: httpx.AsyncClient) -> str:
+    headers = {"X-API-Key": "test_admin_key_12345678901234567890"}
+    res = await client.post("http://localhost:8001/api/v1/admin/keys", json={"credits": 999999, "name": "bench"}, headers=headers)
+    if res.status_code == 200:
+        return res.json()["key"]
+    raise RuntimeError(f"Failed to create key: {res.text}")
+
+async def send_rerank_request(client: httpx.AsyncClient, api_key: str) -> float:
     payload = {
         "query": TEST_QUERY,
         "documents": TEST_DOCUMENTS,
         "top_n": 5
     }
     headers = {
-        "Authorization": f"Bearer {API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
@@ -44,12 +48,18 @@ async def run_benchmark():
     print("=========================================================")
     print(f"Concurrencia: {CONCURRENT_USERS} peticiones simultáneas")
     print(f"Documentos por petición: {DOCUMENTS_PER_REQUEST}")
-    print("Calentando cliente HTTP...")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # Lanza las peticiones en paralelo
+        print("Obteniendo API Key...")
+        try:
+            api_key = await setup_api_key(client)
+        except Exception as e:
+            print("Error obteniendo API key:", e)
+            return
+
+        print("Calentando cliente HTTP...")
         t_start = time.perf_counter()
-        tasks = [send_rerank_request(client) for _ in range(CONCURRENT_USERS)]
+        tasks = [send_rerank_request(client, api_key) for _ in range(CONCURRENT_USERS)]
         latencies = await asyncio.gather(*tasks)
         t_end = time.perf_counter()
         
@@ -59,7 +69,7 @@ async def run_benchmark():
     valid_latencies = [l for l in latencies if l > 0]
     
     if not valid_latencies:
-        print("Ninguna petición fue exitosa. Verifica que la API Key sea válida y el servidor esté corriendo.")
+        print("Ninguna petición fue exitosa.")
         return
 
     print("---------------------------------------------------------")

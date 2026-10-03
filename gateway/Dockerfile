@@ -46,6 +46,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --chown=sesuser:sesgroup ses/ ./ses/
 COPY --chown=sesuser:sesgroup gateway/ ./gateway/
 COPY --chown=sesuser:sesgroup pyproject.toml README.md ./
+COPY --chown=sesuser:sesgroup model_onnx/ ./model_onnx/
 
 USER sesuser
 

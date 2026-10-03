@@ -3,16 +3,16 @@ requires = ["maturin>=1.14,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "ses-core"
-version = "2.0.3"
-description = "Offline-first RAG engine for private, locally operated document systems"
+name = "ses-rerank"
+version = "1.0.0"
+description = "Ultra-low latency Semantic Reranker API for AI agents (LangChain, LlamaIndex)"
 authors = [{name = "Julio Patron", email = "juliopc92@gmail.com"}]
 license = "GPL-3.0-only"
 readme = "README.md"
 requires-python = ">=3.9"
-keywords = ["rag", "llm", "offline", "ai", "semantic-search", "qdrant", "ollama", "local-ai"]
+keywords = ["rag", "llm", "reranker", "ai", "semantic-search", "cross-encoder"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3.9",
@@ -37,15 +37,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "pytest-asyncio>=0.23.0", "black", "flake8"]
-server = ["fastapi>=0.104.0", "uvicorn>=0.23.2", "fpdf2>=2.7.4", "httpx>=0.24.1", "python-multipart>=0.0.9"]
-
-[project.scripts]
-ses = "ses.cli:main"
+server = ["fastapi>=0.104.0", "uvicorn>=0.23.2", "fpdf2>=2.7.4", "httpx>=0.24.1", "python-multipart>=0.0.9", "asyncpg"]
 
 [project.urls]
-Homepage = "https://github.com/elbuilder77/Semantic-Engine"
-Documentation = "https://github.com/elbuilder77/Semantic-Engine#readme"
-Repository = "https://github.com/elbuilder77/Semantic-Engine.git"
+Homepage = "https://github.com/elbuilder77/Rerank-API-SaaS"
+Documentation = "https://github.com/elbuilder77/Rerank-API-SaaS#readme"
+Repository = "https://github.com/elbuilder77/Rerank-API-SaaS.git"
 
 [tool.maturin]
 bindings = "pyo3"

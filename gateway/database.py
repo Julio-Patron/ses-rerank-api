@@ -64,6 +64,14 @@ class DatabaseAdapter(abc.ABC):
     async def bootstrap_admin_key(self, admin_key: str) -> None:
         pass
 
+    @abc.abstractmethod
+    async def signup_by_email(self, email: str) -> Dict[str, Any]:
+        pass
+
+    @abc.abstractmethod
+    async def get_usage(self, key_hash: str) -> Optional[Dict[str, Any]]:
+        pass
+
 
 # Concrete SQLite Adapter (Ideal for local standalone development / testing)
 class SQLiteDatabaseAdapter(DatabaseAdapter):
@@ -90,6 +98,7 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
             CREATE TABLE IF NOT EXISTS tenants (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                email TEXT UNIQUE,
                 plan_tier TEXT DEFAULT 'developer',
                 rate_limit_per_minute INTEGER NOT NULL DEFAULT 60,
                 is_active INTEGER DEFAULT 1,
@@ -97,6 +106,10 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """)
+            try:
+                cursor.execute("ALTER TABLE tenants ADD COLUMN email TEXT UNIQUE;")
+            except sqlite3.OperationalError:
+                pass
 
             # 2. API Keys
             cursor.execute("""
@@ -442,6 +455,65 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                 }
         return await asyncio.to_thread(_analytics)
 
+    async def signup_by_email(self, email: str) -> Dict[str, Any]:
+        def _signup():
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM tenants WHERE email = ?", (email,))
+                if cursor.fetchone():
+                    raise ValueError("email_already_registered")
+                
+                tenant_id = str(uuid.uuid4())
+                cursor.execute(
+                    "INSERT INTO tenants (id, name, email, plan_tier, rate_limit_per_minute) VALUES (?, ?, ?, ?, ?)",
+                    (tenant_id, f"Self-Serve ({email})", email, "free", 10)
+                )
+
+                raw_token = "ses_" + hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:24]
+                key_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+                key_prefix = raw_token[:15]
+                key_id = str(uuid.uuid4())
+
+                cursor.execute(
+                    "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, status, credits_remaining) VALUES (?, ?, ?, ?, ?, ?)",
+                    (key_id, tenant_id, key_hash, key_prefix, "active", 1000)
+                )
+                conn.commit()
+
+                return {
+                    "api_key": raw_token,
+                    "key_prefix": key_prefix,
+                    "credits": 1000,
+                    "plan_tier": "free",
+                    "rate_limit": 10,
+                }
+        return await asyncio.to_thread(_signup)
+
+    async def get_usage(self, key_hash: str) -> Optional[Dict[str, Any]]:
+        def _usage():
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT k.credits_remaining, k.tokens_saved_total,
+                           t.name, t.plan_tier, t.rate_limit_per_minute
+                    FROM api_keys k
+                    JOIN tenants t ON k.tenant_id = t.id
+                    WHERE k.key_hash = ? AND k.status = 'active'
+                    """, (key_hash,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "credits_remaining": row["credits_remaining"],
+                    "tokens_saved_total": row["tokens_saved_total"],
+                    "plan_tier": row["plan_tier"],
+                    "rate_limit": row["rate_limit_per_minute"],
+                    "account_name": row["name"],
+                }
+        return await asyncio.to_thread(_usage)
+
 
 # Concrete PostgreSQL Adapter using asyncpg (High performance client)
 class PostgresDatabaseAdapter(DatabaseAdapter):
@@ -472,6 +544,7 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
             CREATE TABLE IF NOT EXISTS tenants (
                 id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) UNIQUE,
                 plan_tier VARCHAR(50) DEFAULT 'developer',
                 rate_limit_per_minute INT NOT NULL DEFAULT 60,
                 is_active BOOLEAN DEFAULT TRUE,
@@ -479,6 +552,11 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
             """)
+            
+            try:
+                await conn.execute("ALTER TABLE tenants ADD COLUMN email VARCHAR(255) UNIQUE;")
+            except Exception:
+                pass
             
             await conn.execute("""
             CREATE TABLE IF NOT EXISTS api_keys (
@@ -750,6 +828,63 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
                 "average_latency_ms": float(avg_latency),
                 "keys_performance": keys_info,
                 "recent_logs": logs
+            }
+
+    async def signup_by_email(self, email: str) -> Dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM tenants WHERE email = $1", email
+            )
+            if existing:
+                raise ValueError("email_already_registered")
+
+            async with conn.transaction():
+                tenant_id = await conn.fetchval(
+                    "INSERT INTO tenants (name, email, plan_tier, rate_limit_per_minute) "
+                    "VALUES ($1, $2, $3, $4) RETURNING id",
+                    f"Self-Serve ({email})", email, "free", 10,
+                )
+
+                raw_token = "ses_" + hashlib.sha256(
+                    str(uuid.uuid4()).encode()
+                ).hexdigest()[:24]
+                key_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+                key_prefix = raw_token[:15]
+
+                await conn.execute(
+                    "INSERT INTO api_keys (tenant_id, key_hash, key_prefix, "
+                    "status, credits_remaining) VALUES ($1, $2, $3, $4, $5)",
+                    tenant_id, key_hash, key_prefix, "active", 1000,
+                )
+
+                return {
+                    "api_key": raw_token,
+                    "key_prefix": key_prefix,
+                    "credits": 1000,
+                    "plan_tier": "free",
+                    "rate_limit": 10,
+                }
+
+    async def get_usage(self, key_hash: str) -> Optional[Dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT k.credits_remaining, k.tokens_saved_total,
+                       t.name, t.plan_tier, t.rate_limit_per_minute
+                FROM api_keys k
+                JOIN tenants t ON k.tenant_id = t.id
+                WHERE k.key_hash = $1 AND k.status = 'active'
+                """,
+                key_hash,
+            )
+            if not row:
+                return None
+            return {
+                "credits_remaining": row["credits_remaining"],
+                "tokens_saved_total": row["tokens_saved_total"],
+                "plan_tier": row["plan_tier"],
+                "rate_limit": row["rate_limit_per_minute"],
+                "account_name": row["name"],
             }
 
 

@@ -453,6 +453,22 @@ class RerankResponse(BaseModel):
     results: List[RerankDocumentResult]
     meta: RerankMeta
 
+class SignupRequest(BaseModel):
+    email: str = Field(..., description="Email address for self-serve registration")
+
+class SignupResponse(BaseModel):
+    api_key: str
+    credits: int
+    plan_tier: str
+    quickstart: Dict[str, str]
+
+class UsageResponse(BaseModel):
+    account_name: str
+    plan_tier: str
+    credits_remaining: int
+    tokens_saved_total: int
+    rate_limit: int
+
 
 # --- API ROUTES ---
 
@@ -531,8 +547,9 @@ async def api_rerank(
     
     # 3. Redis Caching / Deduplication (Phase 3)
     # Create deterministic hash for the payload
+    tenant_id = key_data.get("tenant_id", "default")
     payload_hash = hashlib.sha256((payload.query + "".join(payload.documents) + str(payload.top_n)).encode()).hexdigest()
-    cache_key = f"gateway:cache:rerank:{payload_hash}"
+    cache_key = f"gateway:cache:rerank:{tenant_id}:{payload_hash}"
     
     result = None
     if redis_available:
@@ -593,6 +610,72 @@ async def api_rerank(
     )
 
     return RerankResponse(results=docs_res, meta=meta)
+
+@app.post("/v1/auth/signup", response_model=SignupResponse, summary="Self-serve registration")
+async def api_signup(payload: SignupRequest):
+    """
+    Registers a new developer and issues a free API key with 1,000 credits.
+    """
+    db = get_database_adapter()
+    try:
+        result = await db.signup_by_email(payload.email)
+        api_key = result["api_key"]
+        
+        # Prepare quickstart snippets
+        curl_snippet = f"""curl -X POST "http://localhost:8000/v1/rerank" \\
+     -H "Authorization: Bearer {api_key}" \\
+     -H "Content-Type: application/json" \\
+     -d '{{
+           "query": "Which clause talks about termination?",
+           "documents": ["The contract is valid for 5 years.", "Termination is allowed with 30 days notice."],
+           "top_n": 1
+         }}'"""
+         
+        python_snippet = f"""from ses_langchain_compressor import SESRerankCompressor
+from langchain.retrievers import ContextualCompressionRetriever
+
+reranker = SESRerankCompressor(
+    ses_api_key="{api_key}",
+    ses_api_url="http://localhost:8000/v1/rerank",
+    top_n=3
+)
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=your_vector_store.as_retriever(search_kwargs={{"k": 25}})
+)"""
+
+        return SignupResponse(
+            api_key=api_key,
+            credits=result["credits"],
+            plan_tier=result["plan_tier"],
+            quickstart={
+                "curl": curl_snippet,
+                "python_langchain": python_snippet
+            }
+        )
+    except ValueError as e:
+        if str(e) == "email_already_registered":
+            raise HTTPException(status_code=400, detail="This email is already registered.")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Signup error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/usage", response_model=UsageResponse, summary="Check credit balance and savings")
+async def api_usage(api_key: str = Security(AUTHORIZATION_HEADER)):
+    """
+    Returns the current usage metrics and remaining credits for the authenticated user.
+    """
+    api_key = parse_authorization_api_key(api_key)
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    
+    db = get_database_adapter()
+    usage = await db.get_usage(key_hash)
+    
+    if not usage:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+        
+    return UsageResponse(**usage)
 
 @app.get("/healthz", summary="Gateway process liveness")
 async def gateway_liveness():
