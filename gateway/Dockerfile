@@ -21,9 +21,13 @@ COPY pyproject.toml README.md ./
 COPY core_rs/ ./core_rs/
 COPY ses/ ./ses/
 COPY gateway/ ./gateway/
+COPY scripts/download_onnx.py ./scripts/download_onnx.py
 
 RUN pip install --no-cache-dir --upgrade pip maturin && \
-    pip install --no-cache-dir ".[server]"
+    pip install --no-cache-dir ".[server]" && \
+    pip install --no-cache-dir huggingface_hub && \
+    python scripts/download_onnx.py && \
+    pip uninstall -y huggingface_hub
 
 # Stage 2: Minimal, secure runtime container
 FROM python:3.12-slim AS runner
@@ -46,7 +50,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --chown=sesuser:sesgroup ses/ ./ses/
 COPY --chown=sesuser:sesgroup gateway/ ./gateway/
 COPY --chown=sesuser:sesgroup pyproject.toml README.md ./
-COPY --chown=sesuser:sesgroup model_onnx/ ./model_onnx/
+COPY --from=builder --chown=sesuser:sesgroup /build/model_onnx ./model_onnx
 
 USER sesuser
 

@@ -32,8 +32,8 @@ the source of truth.
 | Surface | Verified state | Current boundary |
 |---|---|---|
 | Python core | Pytest validates core behavior, SQLite, and controlled network failures | Successful E2E against real Qdrant/Redis/Ollama remains open |
-| Gateway | Auth, SQLite telemetry, CORS, and rate limiting are hardened | PostgreSQL validation and full Docker parity remain open |
-| Portal | Next.js 16; lint, build, and eight administration routes validated | Real-service E2E remains open |
+| Gateway | Auth, SQLite telemetry, CORS, rate limiting, and credit-pack billing are covered offline | Real PostgreSQL and a built production image remain open |
+| Portal | Next.js 16 administration routes plus `/billing` | Real-service E2E remains open |
 | Rust | CPython 3.12 wheel, tests, Clippy, and NumPy API | Optional and used for candidate batches larger than 50 |
 | CI | Portal, Python, Rust, wheel, Pytest, and synthetic smoke in GitHub Actions | Does not replace end-to-end testing |
 | Packaging | `ses-core` 2.0.3 on PyPI and `jas_vector_core` 0.1.0 on crates.io; five ABI3 wheels, sdist, and checksums verified | Published versions are immutable; each correction requires a new version |

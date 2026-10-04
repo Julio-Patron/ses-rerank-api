@@ -15,13 +15,20 @@ SES Rerank solves this by acting as a fast middle-layer:
 4. We return the top 5 most relevant documents.
 5. **You save 85% on your OpenAI API bill.**
 
-## Quick Start (Docker Compose)
-To start the entire Semantic Engine stack (Qdrant, Redis, Ollama, Gateway API, and Portal):
-```bash
-docker compose up -d --build
+## Quick Start (local dependencies)
+
+`docker-compose.yml` starts pinned Qdrant, Redis, and Ollama. It does not start the Gateway or Portal.
+
+```powershell
+Copy-Item .env.example .env
+python scripts/rotate_local_secrets.py
+python scripts/download_onnx.py
+python gateway/run.py
 ```
-- Gateway API: `http://localhost:8000`
-- Portal Console: `http://localhost:3000`
+
+- Gateway API: `http://127.0.0.1:8000`
+- Customer billing UI: `http://127.0.0.1:3000/billing`
+- Operator portal: `http://127.0.0.1:3000`
 
 ## Local Development
 Requires Python 3.10+ and the Rust toolchain (to compile `jas_vector_core`).
@@ -32,19 +39,44 @@ pip install -e ".[dev,server]"
 ```
 Download the ONNX model to `model_onnx/model.onnx` before starting the server using `python scripts/download_onnx.py`.
 
-## Deployment
-This project is built as a containerized stack.
-- **Gateway API**: Deploy the `gateway/Dockerfile` to Railway or Render.
-- **Portal Console**: Deploy `portal/Dockerfile` as a Next.js app.
-- **Qdrant & Redis**: Use managed instances or standard Docker images.
-*(Note on Database Choice: The Gateway uses SQLite by default for zero-dependency local tracking. Only upgrade to Postgres once 10+ paying customers require multi-region analytics.)*
+## Hosted credit packs
+
+Production sells one-time Stripe credit packs, not subscriptions. SQLite is the local default. The hosted stack uses Postgres.
+
+```powershell
+python scripts/deploy_production.py
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+```
+
+`docker-compose.prod.yml` runs Postgres, Redis, the Gateway, and the Portal. `DEBUG` is forced to `false`. It does not start a worker queue, Qdrant, or Ollama. The Gateway image downloads `model_onnx/model.onnx` during the build.
+
+Set these before accepting live payments:
+
+- `STRIPE_API_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `STRIPE_PRICE_DEVELOPER` and `STRIPE_PRICE_GROWTH`
+- `GATEWAY_ADMIN_KEY`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD`
+- `GATEWAY_CORS_ORIGINS` and `BILLING_SUCCESS_URL` for the public Portal origin
+
+Point Stripe at `POST /v1/webhooks/stripe`.
+
+## Billing contract
+
+- `POST /v1/auth/signup` issues a free key once. The raw key is not stored.
+- `POST /v1/billing/checkout` requires the customer `Authorization` key and starts Checkout for `developer` or `growth`. The Price ID comes from the server, not the browser.
+- `POST /v1/webhooks/stripe` grants credits only when the signature is valid, `payment_status` is `paid`, and the paid Price ID matches a configured pack. Credits go to `client_reference_id`. The response never includes a raw key.
+- `POST /v1/billing/claim` reveals a newly created key once, then deletes the claim.
+- `?simulated=true` exists only for local development when `DEBUG=true`. It is not a production payment path.
+- `POST /v1/rerank` charges 1 credit per 25 submitted documents, with a minimum of 1. A metadata filter saves CPU, not credits. An `Idempotency-Key` retry of the same body does not charge again.
+
+The customer page is `/billing`. It stores the buyer key in `ses_customer_api_key`. The operator console still uses `ses_api_key` and `X-API-Key`.
 
 ## Architecture
 - **Rust Core (`jas_vector_core`)**: ONNX cross-encoder execution via `ort` and PyO3.
-- **SES Gateway**: FastAPI server handling authentication, ratelimiting (Redis), and RAG endpoints.
-- **Qdrant**: Vector database for document embeddings.
-- **Ollama**: Local generation model backend.
-- **Portal**: Next.js dashboard for monitoring and API key management.
+- **SES Gateway**: FastAPI server for `/v1/rerank`, credit checks, and Stripe Checkout.
+- **Postgres**: billing store for the hosted stack. SQLite remains the local default.
+- **Redis**: rate limiting, idempotency, and a short rerank cache.
+- **Portal**: operator console plus the customer page at `/billing`.
 
 ## LangChain Integration
 We provide a native compressor in `sdk/python/ses_langchain_compressor.py`.
@@ -67,9 +99,9 @@ compression_retriever = ContextualCompressionRetriever(
 ```
 
 ## Built for Indie Hackers (SaaS Ready)
-This repository is fully decoupled and ready to generate MRR (Monthly Recurring Revenue).
-- **Redis Caching:** Duplicate queries return instantly (Zero CPU cost).
-- **Stripe Webhook:** Included in `gateway/stripe_webhook.py` (simulated mode on by default). Just plug your Stripe Secret and the system will automatically provision 100K API Credits when a user buys a subscription.
+The hosted product sells prepaid credit packs. It is not a subscription.
+- **Credit packs:** Stripe Checkout sells `developer` and `growth` packs. Credits are granted from the paid Price ID, never from `amount_total` or client metadata.
+- **Idempotent rerank:** Redis is the rate limiter, the idempotency store, and a short compute cache. It is not a worker queue on the request path.
 - **Self-Healing Errors:** If an LLM agent sends bad parameters (e.g. `top_n` > `len(docs)`), the API returns a descriptive error guiding the LLM to self-correct.
 
 ## License

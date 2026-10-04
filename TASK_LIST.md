@@ -23,9 +23,10 @@ El objetivo actual es **certificar la calidad del código** y ejecutar un **lanz
 - [x] **Reparar tests unitarios rotos:** El desacople rompió las dependencias de `mock_gateway_services` en `gateway/test_gateway.py`. Actualizar los mocks para que `pytest` pase al 100%.
 - [x] **Test Unitario de Rerank (`tests/test_reranker.py`):** Crear test verificando la exactitud del motor matemático en Python y las fórmulas de ROI (ahorro de tokens).
 - [x] **Test E2E de FastAPI:** Levantar un `TestClient` asíncrono para verificar que `/v1/rerank` descuenta exactamente 1 crédito para <=25 documentos y devuelve error de *Self-Healing* en casos límite.
-- [x] **Test E2E del Webhook de Stripe:** Testear la recepción de un payload simulado para garantizar que se crea una API Key con 100,000 créditos.
+- [x] **Test del webhook de Stripe:** Un Checkout `paid` acredita el pack del Price ID, no el `amount_total`. Un Price ID desconocido no acredita. El modo `?simulated=true` solo existe con `DEBUG=true`.
 
 ### Fase 3: Infraestructura, Empaquetado y Documentación
+- [x] **Packs de crédito hospedados:** Checkout, webhook por Price ID, portal `/billing` y `docker-compose.prod.yml` (Postgres, Redis, Gateway, Portal).
 - [ ] **Refinamiento del Dockerfile:** Probar la construcción completa de la imagen `runner` para asegurar que el binario de Rust corre en Alpine/Slim sin fallas de Glibc.
 - [ ] **Documentación API (Swagger/Redoc):** Asegurar que las descripciones de los esquemas Pydantic (`RerankRequest`, `RerankResponse`) estén documentadas para que OpenAPI auto-genere una página impecable para los clientes.
 

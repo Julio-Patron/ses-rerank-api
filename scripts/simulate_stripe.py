@@ -11,15 +11,13 @@ async def simulate_stripe_webhook():
         "data": {
             "object": {
                 "id": "cs_test_a1b2c3d4",
-                "customer_details": {
-                    "email": "testclient@example.com"
-                },
-                "amount_total": 4900 # $49.00
+                "client_reference_id": "replace-with-tenant-id",
+                "metadata": {"pack": "growth"},
             }
         }
     }
-    
-    print(f"Simulando Webhook para {event['data']['object']['customer_details']['email']}")
+
+    print("Simulated webhook requires DEBUG=true and a configured STRIPE_PRICE_GROWTH.")
     
     # 1. Ejecución inicial (creación)
     async with httpx.AsyncClient() as client:

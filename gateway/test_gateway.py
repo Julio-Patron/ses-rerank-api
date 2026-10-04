@@ -378,9 +378,10 @@ async def test_gateway_lifespan_initializes_persistent_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_fails_closed_in_production_without_redis():
+async def test_rate_limit_fails_closed_in_production_without_redis(monkeypatch):
+    monkeypatch.setenv("DEBUG", "false")
     key_data = {"key": "hashed-test-key", "rate_limit": 60}
-    with patch("gateway.server.DEBUG", False), patch("gateway.server.redis_available", False):
+    with patch("gateway.server.redis_available", False):
         with pytest.raises(server_module.HTTPException) as exc_info:
             await server_module.check_rate_limit(key_data)
 

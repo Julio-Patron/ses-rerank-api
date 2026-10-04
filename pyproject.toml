@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 keywords = ["rag", "llm", "reranker", "ai", "semantic-search", "cross-encoder"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3.9",
@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "pytest-asyncio>=0.23.0", "ruff"]
-server = ["fastapi>=0.104.0", "uvicorn>=0.23.2", "fpdf2>=2.7.4", "httpx>=0.24.1", "python-multipart>=0.0.9", "asyncpg"]
+server = ["fastapi>=0.104.0", "uvicorn>=0.23.2", "fpdf2>=2.7.4", "httpx>=0.24.1", "python-multipart>=0.0.9", "asyncpg", "stripe>=8.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/elbuilder77/Rerank-API-SaaS"
@@ -47,10 +47,17 @@ Repository = "https://github.com/elbuilder77/Rerank-API-SaaS.git"
 [tool.maturin]
 bindings = "pyo3"
 features = ["python"]
-include = [{ path = "LICENSE", format = "sdist" }]
 manifest-path = "core_rs/Cargo.toml"
 module-name = "jas_vector_core"
 python-packages = ["ses"]
+include = [{ path = "LICENSE", format = "sdist" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
 
 [tool.pytest.ini_options]
 addopts = '-m "not integration"'

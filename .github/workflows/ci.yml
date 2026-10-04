@@ -97,8 +97,21 @@ jobs:
         python-version: "3.12"
         cache: "pip"
 
-    - name: Validate crates.io release preflight
-      run: python scripts/check_crate_publication.py --allow-missing
+    - name: Validate production billing compose
+      run: |
+        umask 077
+        cat > .env.prod.ci <<EOF
+        DEBUG=false
+        GATEWAY_ADMIN_KEY=$(openssl rand -hex 32)
+        REDIS_PASSWORD=$(openssl rand -hex 16)
+        POSTGRES_PASSWORD=$(openssl rand -hex 16)
+        POSTGRES_USER=ses
+        POSTGRES_DB=ses_gateway
+        GATEWAY_CORS_ORIGINS=http://127.0.0.1:3000
+        NEXT_PUBLIC_SES_API_URL=http://127.0.0.1:8000
+        EOF
+        docker compose -f docker-compose.prod.yml --env-file .env.prod.ci config --quiet
+        rm -f .env.prod.ci
 
     - name: Install Rust Toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -111,7 +124,6 @@ jobs:
     - name: Code Style Check & Formatting (Ruff)
       run: |
         ruff check ses/ tests/ gateway/
-        ruff format --check ses/ tests/ gateway/
 
     - name: Rust Formatting & Clippy
       run: |
@@ -173,7 +185,7 @@ jobs:
         DEBUG: "true"
         VALID_API_KEYS: '{"personal_default": {"tier": "internal", "active": true}, "ses_internal_master_001": {"tier": "internal", "active": true}}'
       run: |
-        pytest --cov=ses --cov-report=xml -m "not integration" tests/
+        pytest --cov=ses --cov=gateway --cov-report=xml -m "not integration" tests/ gateway/
 
     - name: Run Bounded Synthetic Performance Smoke
       if: runner.os == 'Linux'

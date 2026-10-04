@@ -7,6 +7,23 @@ from jas_vector_core import CrossEncoderEngine
 from transformers import AutoTokenizer
 
 
+def _document_text_and_metadata(doc: Any) -> tuple:
+    """Accept a string, a dict, or an object with text/metadata attributes."""
+    if isinstance(doc, str):
+        return doc, {}
+    if isinstance(doc, dict):
+        text = doc.get("text")
+        metadata = doc.get("metadata") or {}
+    else:
+        text = getattr(doc, "text", None)
+        metadata = getattr(doc, "metadata", None) or {}
+    if not isinstance(text, str):
+        raise ValueError("Document object must include a text field")
+    if not isinstance(metadata, dict):
+        raise ValueError("Document metadata must be an object")
+    return text, metadata
+
+
 class RerankerService:
     def __init__(self, model_dir: str):
         # Cargamos el tokenizador rápido en Python
@@ -31,35 +48,26 @@ class RerankerService:
         if not documents:
             return {"results": [], "meta": {}}
 
-        # Parse text and metadata from documents
         doc_texts = []
         doc_metadata_json = []
         for doc in documents:
-            if isinstance(doc, str):
-                doc_texts.append(doc)
-                doc_metadata_json.append("{}")
-            else:
-                doc_texts.append(doc.text)
-                metadata = doc.metadata or {}
-                doc_metadata_json.append(json.dumps(metadata) if metadata else "{}")
-        
-        # Apply JSONLogic filter if provided
+            text, metadata = _document_text_and_metadata(doc)
+            doc_texts.append(text)
+            doc_metadata_json.append(json.dumps(metadata) if metadata else "{}")
+
         if jsonlogic_filter:
             import jas_vector_core
             rule_str = json.dumps(jsonlogic_filter)
             try:
-                # filter_metadata is executed in a background thread
                 passed_indices = await asyncio.to_thread(
                     jas_vector_core.filter_metadata,
                     rule_str,
                     doc_metadata_json
                 )
-            except Exception as e:
-                raise ValueError(f"JSONLogic Error: {e}")
+            except Exception as exc:
+                raise ValueError("Invalid jsonlogic_filter") from exc
         else:
             passed_indices = list(range(len(documents)))
-            
-        print(f"DEBUG: rule={jsonlogic_filter}, metadata={doc_metadata_json}, passed={passed_indices}")
 
         if not passed_indices:
             return {
@@ -78,16 +86,17 @@ class RerankerService:
                 }
             }
 
-        # Prepare pairs only for documents that passed the filter
         pairs = [[query, doc_texts[i]] for i in passed_indices]
-        
-        # Tokenize only the filtered batch
-        encodings = self.tokenizer(
-            pairs, 
-            padding=True, 
-            truncation=True, 
-            return_tensors="np" # numpy for zero-copy to Rust
-        )
+
+        def _tokenize():
+            return self.tokenizer(
+                pairs,
+                padding=True,
+                truncation=True,
+                return_tensors="np",
+            )
+
+        encodings = await asyncio.to_thread(_tokenize)
 
         # Run high performance inference in Rust
         search_results = await asyncio.to_thread(
@@ -110,13 +119,11 @@ class RerankerService:
 
             # Map the local index back to the original index
             original_idx = passed_indices[local_idx]
-            doc_obj = documents[original_idx]
-            
             output_docs_tokens += self._estimate_tokens(doc_texts[original_idx])
             results.append({
                 "index": original_idx,
                 "relevance_score": score,
-                "document": doc_obj
+                "document": doc_texts[original_idx],
             })
 
         end_time = time.perf_counter()
