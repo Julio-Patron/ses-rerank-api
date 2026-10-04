@@ -34,9 +34,9 @@ from ses.config import (
     REDIS_PORT,
 )
 
-DEBUG = True
-# Database imports
+from gateway.billing import credit_pack
 from gateway.database import get_database_adapter
+from gateway.runtime import debug_enabled
 from ses.services.reranker import RerankerService
 
 logging.basicConfig(level=logging.INFO)
@@ -241,7 +241,8 @@ async def _dependency_health() -> Dict[str, Any]:
         _probe_redis(),
         _probe_ollama(),
     )
-    ready = qdrant_ok and redis_ok and ollama_ok
+    reranker_ok = reranker_service is not None
+    ready = redis_ok and reranker_ok
     return {
         "status": "healthy" if ready else "degraded",
         "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
@@ -249,6 +250,7 @@ async def _dependency_health() -> Dict[str, Any]:
             "qdrant": "connected" if qdrant_ok else "disconnected",
             "redis": "connected" if redis_ok else "disconnected",
             "ollama_api": "connected" if ollama_ok else "disconnected",
+            "reranker": "ready" if reranker_ok else "unavailable",
             "rust_acceleration": "active" if _rust_acceleration_available() else "inactive",
         },
     }
@@ -326,13 +328,13 @@ async def check_rate_limit(key_data: Dict[str, Any]):
         except Exception as e:
             logger.error(f"Redis rate limit error: {e}")
 
-            if not DEBUG:
+            if not debug_enabled():
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Rate limiting service unavailable.",
                 )
 
-    if not redis_available and not DEBUG:
+    if not redis_available and not debug_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Rate limiting service unavailable.",
@@ -469,6 +471,46 @@ class UsageResponse(BaseModel):
     rate_limit: int
 
 
+class CheckoutRequest(BaseModel):
+    pack: str = Field(..., description="Credit pack name: developer or growth")
+
+
+class CheckoutResponse(BaseModel):
+    url: str
+
+
+class ClaimRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=255)
+
+
+class ClaimResponse(BaseModel):
+    api_key: str
+
+
+def canonical_rerank_digest(payload: RerankRequest) -> str:
+    """Hash the billable request so cache and idempotency cannot ignore a filter."""
+    body = payload.model_dump(mode="json")
+    encoded = json.dumps(
+        {
+            "query": body["query"],
+            "documents": body["documents"],
+            "top_n": body["top_n"],
+            "return_documents": body["return_documents"],
+            "jsonlogic_filter": body.get("jsonlogic_filter"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _stripe_module():
+    import stripe
+
+    return stripe
+
+
 # --- API ROUTES ---
 
 AUTHORIZATION_HEADER = APIKeyHeader(name="Authorization", auto_error=False)
@@ -544,106 +586,101 @@ async def api_rerank(
         raise HTTPException(status_code=402, detail="Insufficient credits")
 
     t0 = time.time()
-    
-    # 3. Redis Strict Idempotency & Deduplication
-    tenant_id = key_data.get("tenant_id", "default")
+    digest = canonical_rerank_digest(payload)
     result = None
-    cache_key = None
+    replay = False
+    idempotency_cache_key = None
+    compute_cache_key = f"gateway:cache:rerank:{key_hash}:{digest}"
 
-    if redis_available:
-        if idempotency_key:
-            # Idempotency based on explicitly provided client key (O(1) checking, zero CPU payload hashing)
-            cache_key = f"gateway:idempotency:{tenant_id}:{idempotency_key}"
-        else:
-            # Fallback to payload hashing if no idempotency key provided
-            payload_hash = hashlib.sha256((payload.query + "".join(payload.documents) + str(payload.top_n)).encode()).hexdigest()
-            cache_key = f"gateway:cache:rerank:{tenant_id}:{payload_hash}"
-            
+    if redis_available and idempotency_key:
+        idempotency_cache_key = f"gateway:idempotency:{key_hash}:{idempotency_key}"
         try:
-            cached_result = await redis_client.get(cache_key)
+            cached_result = await redis_client.get(idempotency_cache_key)
+            if cached_result:
+                cached = json.loads(cached_result)
+                if cached.get("digest") != digest:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Idempotency-Key was already used for a different request",
+                    )
+                result = cached.get("result")
+                replay = True
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Redis idempotency read failed: %s", exc)
+
+    if result is None and redis_available and not idempotency_key:
+        try:
+            cached_result = await redis_client.get(compute_cache_key)
             if cached_result:
                 result = json.loads(cached_result)
-        except Exception as e:
-            logger.error(f"Redis get cache error: {e}")
+        except Exception as exc:
+            logger.error("Redis cache read failed: %s", exc)
 
-    if not result:
-        if redis_available:
-            import uuid
-            task_id = str(uuid.uuid4())
-            task_payload = payload.model_dump(mode='json') if hasattr(payload, 'model_dump') else payload.dict()
-            task_payload["task_id"] = task_id
-            
-            try:
-                # Send task to worker queue
-                await redis_client.rpush("ses_rerank_queue", json.dumps(task_payload))
-                
-                # Block until worker replies (Timeout after 30s)
-                response_key = f"ses_rerank_result:{task_id}"
-                queue_result = await redis_client.blpop([response_key], timeout=30)
-                
-                if queue_result is None:
-                    raise HTTPException(status_code=504, detail="Reranking worker timeout")
-                
-                _, result_json = queue_result
-                result = json.loads(result_json)
-                
-                if "error" in result:
-                    raise HTTPException(status_code=500, detail=result["error"])
-            except Exception as e:
-                logger.error(f"Redis queue error: {e}")
-                if isinstance(e, HTTPException):
-                    raise
-                # Fallback
-                if reranker_service is None:
-                    raise HTTPException(status_code=500, detail="Queue failed and local engine not available")
-                result = await reranker_service.rerank(
-                    query=payload.query,
-                    documents=payload.documents,
-                    top_n=payload.top_n,
-                    jsonlogic_filter=payload.jsonlogic_filter
-                )
-        else:
-            if reranker_service is None:
-                raise HTTPException(status_code=500, detail="Reranker Engine is not initialized")
+    if result is None:
+        if reranker_service is None:
+            raise HTTPException(status_code=500, detail="Rerank failed")
+        try:
             result = await reranker_service.rerank(
                 query=payload.query,
                 documents=payload.documents,
                 top_n=payload.top_n,
-                jsonlogic_filter=payload.jsonlogic_filter
+                jsonlogic_filter=payload.jsonlogic_filter,
             )
-        if redis_available and cache_key:
-            try:
-                # Cache for 24 hours if using idempotency key, else 60 seconds
-                ttl = 86400 if idempotency_key else 60
-                await redis_client.setex(cache_key, ttl, json.dumps(result))
-            except Exception as e:
-                logger.error(f"Redis set cache error: {e}")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid rerank request")
+        except Exception:
+            logger.exception("Rerank failed")
+            raise HTTPException(status_code=500, detail="Rerank failed")
 
-    # Calculate tokens saved
     saved_tokens = result.get("meta", {}).get("token_metrics", {}).get("saved_tokens", 0)
     total_tokens = result.get("meta", {}).get("token_metrics", {}).get("input_tokens", 0)
-    
-    # Update credits
-    update_res = await db.update_credits(key_hash, credits_needed, saved_tokens)
-    
-    final_credits_remaining = update_res.get("credits_remaining", 0)
-    final_tokens_saved_total = update_res.get("tokens_saved_total", 0)
 
-    # Prepare response
+    if replay:
+        final_credits_remaining = key_data.get("credits_remaining", 0)
+        credits_charged = 0
+        response_tokens_saved = 0
+    else:
+        try:
+            update_res = await db.update_credits(key_hash, credits_needed, saved_tokens)
+        except Exception:
+            logger.exception("Credit update failed")
+            raise HTTPException(status_code=402, detail="Insufficient credits")
+        final_credits_remaining = update_res.get("credits_remaining", 0)
+        credits_charged = credits_needed
+        response_tokens_saved = saved_tokens
+        if redis_available:
+            try:
+                if idempotency_cache_key:
+                    await redis_client.setex(
+                        idempotency_cache_key,
+                        86400,
+                        json.dumps({"digest": digest, "result": result}),
+                    )
+                else:
+                    await redis_client.setex(compute_cache_key, 60, json.dumps(result))
+            except Exception as exc:
+                logger.error("Redis cache write failed: %s", exc)
+
     docs_res = []
-    for r in result.get("results", []):
-        doc_text = r["document"] if payload.return_documents else None
+    for item in result.get("results", []):
+        document = item.get("document")
+        if not payload.return_documents:
+            document = None
+        elif not isinstance(document, str):
+            document = None
         docs_res.append(RerankDocumentResult(
-            index=r["index"],
-            relevance_score=r["relevance_score"],
-            document=doc_text
+            index=item["index"],
+            relevance_score=item["relevance_score"],
+            document=document,
         ))
 
     meta = RerankMeta(
         tokens=RerankTokenMetrics(total_tokens=total_tokens),
-        credits_deducted=credits_needed,
+        credits_deducted=credits_charged,
         credits_remaining=final_credits_remaining,
-        tokens_saved=final_tokens_saved_total
+        tokens_saved=response_tokens_saved,
     )
 
     latency_ms = (time.time() - t0) * 1000
@@ -719,6 +756,62 @@ async def api_usage(api_key: str = Security(AUTHORIZATION_HEADER)):
         raise HTTPException(status_code=403, detail="Invalid API Key")
         
     return UsageResponse(**usage)
+
+
+@app.post("/v1/billing/checkout", response_model=CheckoutResponse, summary="Start a credit-pack checkout")
+async def billing_checkout(payload: CheckoutRequest, api_key: str = Security(AUTHORIZATION_HEADER)):
+    """Create a Stripe Checkout session for the authenticated tenant."""
+    api_key = parse_authorization_api_key(api_key)
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+    db = get_database_adapter()
+    key_data = await db.get_api_key(key_hash)
+    if not key_data:
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+
+    pack = credit_pack(payload.pack)
+    stripe_api_key = os.getenv("STRIPE_API_KEY", "").strip()
+    if pack is None or not stripe_api_key:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+    try:
+        stripe = _stripe_module()
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Billing is not configured")
+
+    stripe.api_key = stripe_api_key
+    success_url = os.getenv("BILLING_SUCCESS_URL", "http://localhost:3000/billing/success").strip()
+    cancel_url = os.getenv("BILLING_CANCEL_URL", "http://localhost:3000/billing").strip()
+    if "{CHECKOUT_SESSION_ID}" not in success_url:
+        separator = "&" if "?" in success_url else "?"
+        success_url = f"{success_url}{separator}session_id={{CHECKOUT_SESSION_ID}}"
+    tenant_id = str(key_data["tenant_id"])
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            client_reference_id=tenant_id,
+            line_items=[{"price": pack["price_id"], "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"pack": pack["name"], "tenant_id": tenant_id},
+        )
+    except Exception:
+        logger.exception("Stripe checkout session failed")
+        raise HTTPException(status_code=502, detail="Could not start checkout")
+
+    url = session.url if hasattr(session, "url") else session.get("url")
+    if not url:
+        raise HTTPException(status_code=502, detail="Could not start checkout")
+    return CheckoutResponse(url=url)
+
+
+@app.post("/v1/billing/claim", response_model=ClaimResponse, summary="Claim a one-time API key")
+async def billing_claim(payload: ClaimRequest):
+    """Return a payment-created API key once, then delete the claim."""
+    db = get_database_adapter()
+    raw_key = await db.claim_checkout_key(payload.session_id)
+    if not raw_key:
+        raise HTTPException(status_code=404, detail="No key to claim")
+    return ClaimResponse(api_key=raw_key)
+
 
 @app.get("/healthz", summary="Gateway process liveness")
 async def gateway_liveness():

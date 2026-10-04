@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ses_gateway_database")
@@ -57,7 +57,19 @@ class DatabaseAdapter(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def process_stripe_event(self, event_id: str, customer_email: str, plan_tier: str, credits_to_add: int, rate_limit: int) -> Optional[Dict[str, Any]]:
+    async def apply_paid_pack(
+        self,
+        event_id: str,
+        tenant_id: str,
+        plan_tier: str,
+        credits_to_add: int,
+        rate_limit: int,
+        checkout_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        pass
+
+    @abc.abstractmethod
+    async def claim_checkout_key(self, checkout_session_id: str) -> Optional[str]:
         pass
 
     @abc.abstractmethod
@@ -150,6 +162,14 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
             CREATE TABLE IF NOT EXISTS stripe_events (
                 event_id TEXT PRIMARY KEY,
                 processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS key_claims (
+                checkout_session_id TEXT PRIMARY KEY,
+                api_key_raw TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """)
             conn.commit()
@@ -328,52 +348,93 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                 return {"credits_remaining": row["credits_remaining"], "tokens_saved_total": row["tokens_saved_total"]}
         return await asyncio.to_thread(_update)
 
-    async def process_stripe_event(self, event_id: str, customer_email: str, plan_tier: str, credits_to_add: int, rate_limit: int) -> Optional[Dict[str, Any]]:
-        def _process():
+    async def apply_paid_pack(
+        self,
+        event_id: str,
+        tenant_id: str,
+        plan_tier: str,
+        credits_to_add: int,
+        rate_limit: int,
+        checkout_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        def _apply():
             with self._get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
                 cursor = conn.cursor()
-                # 1. Idempotency Check
                 cursor.execute("SELECT event_id FROM stripe_events WHERE event_id = ?", (event_id,))
                 if cursor.fetchone():
-                    return None # Already processed
-                
-                # 2. Mark as processed
-                cursor.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+                    conn.rollback()
+                    return None
+                cursor.execute("SELECT id FROM tenants WHERE id = ?", (tenant_id,))
+                if not cursor.fetchone():
+                    cursor.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+                    conn.commit()
+                    return {"status": "unknown_tenant"}
 
-                # 3. Check for existing tenant
-                namespace = f"user_{customer_email.split('@')[0]}" if customer_email else "user_stripe"
-                cursor.execute("SELECT id FROM tenants WHERE name LIKE ?", (f"%{customer_email}%",))
-                tenant_row = cursor.fetchone()
-                
-                if tenant_row:
-                    tenant_id = tenant_row["id"]
-                    # Update existing key credits
-                    cursor.execute("SELECT id, key_hash, key_prefix FROM api_keys WHERE tenant_id = ? AND status = 'active' LIMIT 1", (tenant_id,))
-                    key_row = cursor.fetchone()
-                    if key_row:
-                        key_hash = key_row["key_hash"]
-                        cursor.execute("UPDATE api_keys SET credits_remaining = credits_remaining + ? WHERE id = ?", (credits_to_add, key_row["id"]))
-                        conn.commit()
-                        return {"key_prefix": key_row["key_prefix"], "status": "updated", "key_hash": key_hash}
-                
-                # 4. Create new if not exists
+                cursor.execute(
+                    "UPDATE tenants SET plan_tier = ?, rate_limit_per_minute = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (plan_tier, rate_limit, tenant_id),
+                )
+                cursor.execute(
+                    "SELECT id, key_prefix FROM api_keys WHERE tenant_id = ? AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+                    (tenant_id,),
+                )
+                key_row = cursor.fetchone()
+                if key_row:
+                    cursor.execute(
+                        "UPDATE api_keys SET credits_remaining = credits_remaining + ? WHERE id = ?",
+                        (credits_to_add, key_row["id"]),
+                    )
+                    cursor.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+                    conn.commit()
+                    return {"status": "updated", "key_prefix": key_row["key_prefix"]}
+
+                if not checkout_session_id:
+                    cursor.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+                    conn.commit()
+                    return {"status": "undeliverable"}
+
                 raw_token = "ses_" + hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:24]
                 key_hash = hashlib.sha256(raw_token.encode()).hexdigest()
                 key_prefix = raw_token[:15]
-                tenant_id = str(uuid.uuid4())
                 key_id = str(uuid.uuid4())
-                
-                cursor.execute(
-                    "INSERT INTO tenants (id, name, plan_tier, rate_limit_per_minute) VALUES (?, ?, ?, ?)",
-                    (tenant_id, f"Stripe Purchase ({customer_email})", plan_tier, rate_limit)
-                )
+                expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
                 cursor.execute(
                     "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, status, credits_remaining) VALUES (?, ?, ?, ?, ?, ?)",
-                    (key_id, tenant_id, key_hash, key_prefix, "active", credits_to_add)
+                    (key_id, tenant_id, key_hash, key_prefix, "active", credits_to_add),
+                )
+                cursor.execute(
+                    "INSERT INTO key_claims (checkout_session_id, api_key_raw, expires_at) VALUES (?, ?, ?)",
+                    (checkout_session_id, raw_token, expires_at),
+                )
+                cursor.execute("INSERT INTO stripe_events (event_id) VALUES (?)", (event_id,))
+                conn.commit()
+                return {"status": "created", "key_prefix": key_prefix, "claim_required": True}
+        return await asyncio.to_thread(_apply)
+
+    async def claim_checkout_key(self, checkout_session_id: str) -> Optional[str]:
+        def _claim():
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT api_key_raw, expires_at FROM key_claims WHERE checkout_session_id = ?",
+                    (checkout_session_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                expires_at = datetime.fromisoformat(row["expires_at"])
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                cursor.execute(
+                    "DELETE FROM key_claims WHERE checkout_session_id = ?",
+                    (checkout_session_id,),
                 )
                 conn.commit()
-                return {"key_prefix": key_prefix, "status": "created", "key_hash": key_hash, "key": raw_token}
-        return await asyncio.to_thread(_process)
+                if expires_at < datetime.now(timezone.utc):
+                    return None
+                return row["api_key_raw"]
+        return await asyncio.to_thread(_claim)
 
     async def set_credits(self, key_hash: str, credits: int) -> Dict[str, Any]:
         def _set():
@@ -596,6 +657,14 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
                 processed_at TIMESTAMPTZ DEFAULT NOW()
             );
             """)
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS key_claims (
+                checkout_session_id VARCHAR(255) PRIMARY KEY,
+                api_key_raw TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            """)
 
     async def bootstrap_admin_key(self, admin_key: str) -> None:
         key_hash = hashlib.sha256(admin_key.encode()).hexdigest()
@@ -734,38 +803,111 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
                 raise ValueError("API Key not found or insufficient credits")
             return {"credits_remaining": row["credits_remaining"], "tokens_saved_total": row["tokens_saved_total"]}
 
-    async def process_stripe_event(self, event_id: str, customer_email: str, plan_tier: str, credits_to_add: int, rate_limit: int) -> Optional[Dict[str, Any]]:
+    async def apply_paid_pack(
+        self,
+        event_id: str,
+        tenant_id: str,
+        plan_tier: str,
+        credits_to_add: int,
+        rate_limit: int,
+        checkout_session_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            tenant_uuid = uuid.UUID(str(tenant_id))
+        except ValueError:
+            return {"status": "unknown_tenant"}
+
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Idempotency Check
-                existing = await conn.fetchval("SELECT event_id FROM stripe_events WHERE event_id = $1", event_id)
+                existing = await conn.fetchval(
+                    "SELECT event_id FROM stripe_events WHERE event_id = $1",
+                    event_id,
+                )
                 if existing:
-                    return None # Already processed
-                
-                await conn.execute("INSERT INTO stripe_events (event_id) VALUES ($1)", event_id)
+                    return None
+                tenant_exists = await conn.fetchval(
+                    "SELECT id FROM tenants WHERE id = $1",
+                    tenant_uuid,
+                )
+                if not tenant_exists:
+                    await conn.execute(
+                        "INSERT INTO stripe_events (event_id) VALUES ($1)",
+                        event_id,
+                    )
+                    return {"status": "unknown_tenant"}
 
-                # 2. Check for existing tenant
-                tenant_id = await conn.fetchval("SELECT id FROM tenants WHERE name LIKE $1 LIMIT 1", f"%{customer_email}%")
-                if tenant_id:
-                    key_row = await conn.fetchrow("SELECT id, key_hash, key_prefix FROM api_keys WHERE tenant_id = $1 AND status = 'active' LIMIT 1", tenant_id)
-                    if key_row:
-                        await conn.execute("UPDATE api_keys SET credits_remaining = credits_remaining + $1 WHERE id = $2", credits_to_add, key_row["id"])
-                        return {"key_prefix": key_row["key_prefix"], "status": "updated", "key_hash": key_row["key_hash"]}
-                
-                # 3. Create new if not exists
+                await conn.execute(
+                    "UPDATE tenants SET plan_tier = $1, rate_limit_per_minute = $2, updated_at = NOW() WHERE id = $3",
+                    plan_tier,
+                    rate_limit,
+                    tenant_uuid,
+                )
+                key_row = await conn.fetchrow(
+                    "SELECT id, key_prefix FROM api_keys WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at ASC LIMIT 1",
+                    tenant_uuid,
+                )
+                if key_row:
+                    await conn.execute(
+                        "UPDATE api_keys SET credits_remaining = credits_remaining + $1 WHERE id = $2",
+                        credits_to_add,
+                        key_row["id"],
+                    )
+                    await conn.execute(
+                        "INSERT INTO stripe_events (event_id) VALUES ($1)",
+                        event_id,
+                    )
+                    return {"status": "updated", "key_prefix": key_row["key_prefix"]}
+
+                if not checkout_session_id:
+                    await conn.execute(
+                        "INSERT INTO stripe_events (event_id) VALUES ($1)",
+                        event_id,
+                    )
+                    return {"status": "undeliverable"}
+
                 raw_token = "ses_" + hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:24]
                 key_hash = hashlib.sha256(raw_token.encode()).hexdigest()
                 key_prefix = raw_token[:15]
-                
-                new_tenant_id = await conn.fetchval(
-                    "INSERT INTO tenants (name, plan_tier, rate_limit_per_minute) VALUES ($1, $2, $3) RETURNING id",
-                    f"Stripe Purchase ({customer_email})", plan_tier, rate_limit
-                )
+                expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
                 await conn.execute(
                     "INSERT INTO api_keys (tenant_id, key_hash, key_prefix, status, credits_remaining) VALUES ($1, $2, $3, $4, $5)",
-                    new_tenant_id, key_hash, key_prefix, "active", credits_to_add
+                    tenant_uuid,
+                    key_hash,
+                    key_prefix,
+                    "active",
+                    credits_to_add,
                 )
-                return {"key_prefix": key_prefix, "status": "created", "key_hash": key_hash, "key": raw_token}
+                await conn.execute(
+                    "INSERT INTO key_claims (checkout_session_id, api_key_raw, expires_at) VALUES ($1, $2, $3)",
+                    checkout_session_id,
+                    raw_token,
+                    expires_at,
+                )
+                await conn.execute(
+                    "INSERT INTO stripe_events (event_id) VALUES ($1)",
+                    event_id,
+                )
+                return {"status": "created", "key_prefix": key_prefix, "claim_required": True}
+
+    async def claim_checkout_key(self, checkout_session_id: str) -> Optional[str]:
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT api_key_raw, expires_at FROM key_claims WHERE checkout_session_id = $1",
+                    checkout_session_id,
+                )
+                if not row:
+                    return None
+                expires_at = row["expires_at"]
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                await conn.execute(
+                    "DELETE FROM key_claims WHERE checkout_session_id = $1",
+                    checkout_session_id,
+                )
+                if expires_at < datetime.now(timezone.utc):
+                    return None
+                return row["api_key_raw"]
 
     async def set_credits(self, key_hash: str, credits: int) -> Dict[str, Any]:
         async with self.pool.acquire() as conn:

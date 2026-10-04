@@ -4,7 +4,6 @@ pub fn filter_by_jsonlogic(rule_str: &str, metadata_json_strings: &[String]) -> 
     
     let mut passed = Vec::new();
     for (i, val) in results.into_iter().enumerate() {
-        println!("Metadata {}: Eval result: {}", i, val);
         if val == serde_json::Value::Bool(true) {
             passed.push(i);
         }

@@ -35,10 +35,13 @@ key in a `NEXT_PUBLIC_` variable.
 - `/analytics`: persisted request aggregates and recent-log timeline.
 - `/reports`: usage and health PDF downloads.
 - `/settings`: browser-local Gateway configuration.
+- `/billing`: customer signup, balance, and Stripe credit-pack checkout. The
+  buyer key is stored separately in `ses_customer_api_key`.
+- `/billing/success`: one-time claim for a key created by a paid Checkout.
 
 ## Operational boundary
 
-`npm run build` proves the frontend compiles and prerenders. Full feature
-validation also requires the Gateway plus its configured Qdrant, Redis, and
-Ollama dependencies. A degraded or unavailable backend is surfaced by the
-individual pages; it is not replaced with sample data.
+`npm run build` proves the frontend compiles and prerenders. Operator pages
+still depend on the Gateway and its configured satellites. `/billing` only
+needs the Gateway billing routes and a configured Stripe Price ID. Never put an
+API key in a `NEXT_PUBLIC_` variable.

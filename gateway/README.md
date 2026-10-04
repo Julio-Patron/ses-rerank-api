@@ -22,9 +22,9 @@ Qdrant  Redis   Ollama
 SQLite local para llaves y telemetría
 ~~~
 
-El aislamiento lógico usa el namespace asociado a cada llave. Este repositorio
-no demuestra todavía aislamiento de infraestructura por cliente, RBAC
-corporativo completo, facturación comercial ni SLAs.
+El aislamiento lógico usa el namespace asociado a cada llave. La facturación
+comercial implementada son packs de crédito de un solo pago, no suscripciones
+ni SLAs.
 
 ## Seguridad comprobada
 
@@ -71,7 +71,33 @@ python gateway/run.py
 
 El servidor queda en <http://127.0.0.1:8000>.
 
-Todas las rutas protegidas esperan <code>X-API-Key: &lt;llave&gt;</code>.
+Las rutas de cliente (`/v1/rerank`, `/v1/usage`, `/v1/billing/checkout`) aceptan
+la llave en `Authorization`, en crudo o con el esquema `Bearer`. La
+administración usa `X-API-Key`.
+
+## Facturación
+
+La ruta de pago es el rerank en proceso. No hay cola `ses_rerank_queue` en la
+petición.
+
+- `POST /v1/auth/signup` entrega una llave gratuita una sola vez.
+- `POST /v1/billing/checkout` abre Stripe Checkout para `developer` o `growth`.
+- `POST /v1/webhooks/stripe` exige firma. Acredita solo si el pago está `paid`
+  y el Price ID coincide con `STRIPE_PRICE_DEVELOPER` o `STRIPE_PRICE_GROWTH`.
+  Los créditos van a `client_reference_id`. La respuesta no incluye la llave.
+- `POST /v1/billing/claim` muestra una llave nueva una vez y borra el reclamo.
+- `?simulated=true` responde 404 salvo que `DEBUG=true`.
+
+`POST /v1/rerank` cobra 1 crédito por cada 25 documentos enviados, con mínimo
+de 1. El filtro JSONLogic ahorra CPU, no créditos. Un `Idempotency-Key`
+repetido con el mismo cuerpo no vuelve a cobrar.
+
+En local, SQLite vive en `data/gateway.db`. El stack hospedado usa Postgres:
+
+~~~powershell
+python scripts/deploy_production.py
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+~~~
 
 ## Contratos HTTP implementados
 
@@ -91,7 +117,7 @@ candidatos.
 ### Salud
 
 - <code>GET /healthz</code> (liveness del proceso, sin inicializar modelos)
-- <code>GET /readyz</code> (readiness de Qdrant, Redis y Ollama; responde 503 si falta una dependencia)
+- <code>GET /readyz</code> (listo solo si Redis responde y el reranker ONNX cargó; Qdrant y Ollama se informan, pero no bloquean)
 - <code>GET /api/v1/health</code>
 
 Reporta estado del Gateway y dependencias. Un estado HTTP exitoso no implica que
@@ -107,9 +133,9 @@ todos los servicios satélite estén disponibles; revise el cuerpo de respuesta.
 - <code>GET /api/v1/admin/reports/health</code>
 - <code>POST /api/v1/reports/evidence</code>
 
-La telemetría persistente conserva `id` y `tenant_id` al crear llaves y su
-contrato se valida extremo a extremo con SQLite. PostgreSQL real y cualquier
-uso como fuente de facturación continúan siendo gates separados.
+La telemetría persistente conserva `id` y `tenant_id`. SQLite cubre las pruebas
+offline. Postgres es el almacén de facturación del compose de producción; su
+validación contra un servidor real sigue siendo un gate aparte.
 
 ## Portal
 

@@ -18,8 +18,6 @@ for _mod in (
 ):
     sys.modules.setdefault(_mod, MagicMock())
 
-# Set DEBUG=false for fail-closed tests
-os.environ["DEBUG"] = "false"
 os.environ["GATEWAY_ADMIN_KEY"] = "secure_admin_key_that_is_long_enough_for_production"
 os.environ["GATEWAY_CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["QDRANT_API_KEY"] = "test_key"
@@ -79,11 +77,10 @@ class TestFailClosedRateLimit:
     """Tests for rate limiting fail-closed behavior."""
 
     @pytest.mark.asyncio
-    async def test_check_rate_limit_fails_closed_when_redis_unavailable(self):
+    async def test_check_rate_limit_fails_closed_when_redis_unavailable(self, monkeypatch):
         """Rate limit should fail closed (503) when Redis unavailable and DEBUG=false."""
-        # Ensure Redis is not available
-        with patch("gateway.server.redis_available", False), \
-             patch("gateway.server.DEBUG", False):
+        monkeypatch.setenv("DEBUG", "false")
+        with patch("gateway.server.redis_available", False):
             
             key_data = {
                 "key": "test_hash",
@@ -101,15 +98,15 @@ class TestFailClosedRateLimit:
             assert "Rate limiting service unavailable" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_check_rate_limit_fails_closed_on_redis_error(self):
+    async def test_check_rate_limit_fails_closed_on_redis_error(self, monkeypatch):
         """Rate limit should fail closed (503) on Redis error when DEBUG=false."""
+        monkeypatch.setenv("DEBUG", "false")
         mock_redis = AsyncMock()
         mock_redis.incr = AsyncMock(side_effect=Exception("Redis connection failed"))
         mock_redis.expire = AsyncMock()
-        
+
         with patch("gateway.server.redis_available", True), \
-             patch("gateway.server.redis_client", mock_redis), \
-             patch("gateway.server.DEBUG", False):
+             patch("gateway.server.redis_client", mock_redis):
             
             key_data = {
                 "key": "test_hash",
@@ -127,10 +124,10 @@ class TestFailClosedRateLimit:
             assert "Rate limiting service unavailable" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_check_rate_limit_allows_in_memory_fallback_when_debug_true(self):
+    async def test_check_rate_limit_allows_in_memory_fallback_when_debug_true(self, monkeypatch):
         """Rate limit should allow in-memory fallback when DEBUG=true."""
-        with patch("gateway.server.redis_available", False), \
-             patch("gateway.server.DEBUG", True):
+        monkeypatch.setenv("DEBUG", "true")
+        with patch("gateway.server.redis_available", False):
             
             key_data = {
                 "key": "test_hash",

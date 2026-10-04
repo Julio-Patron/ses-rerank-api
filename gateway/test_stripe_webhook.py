@@ -66,16 +66,21 @@ def stripe_client():
     mock_db.set_credits = AsyncMock(
         return_value={"credits_remaining": 100000, "tokens_saved_total": 0}
     )
-    mock_db.process_stripe_event = AsyncMock(
-        return_value={"status": "created", "key_prefix": "ses_abc123", "credits_remaining": 100000}
+    mock_db.apply_paid_pack = AsyncMock(
+        return_value={"status": "updated", "key_prefix": "ses_abc123"}
     )
 
     fake_event = {
+        "id": "evt_test",
         "type": "checkout.session.completed",
         "data": {
             "object": {
+                "id": "cs_test_session",
+                "payment_status": "paid",
+                "client_reference_id": "tenant_123",
+                "metadata": {"pack": "developer"},
                 "customer_details": {"email": "buyer@example.com"},
-                "amount_total": 4900,
+                "amount_total": 100,
             }
         },
     }
@@ -86,20 +91,28 @@ def stripe_client():
          patch("gateway.server._probe_redis", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server._probe_ollama", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server.redis_available", False), \
-         patch("gateway.stripe_webhook.STRIPE_WEBHOOK_SECRET", "whsec_test"), \
          patch("gateway.stripe_webhook.stripe") as mock_stripe:
 
         mock_stripe.Webhook.construct_event.return_value = fake_event
+        mock_stripe.checkout.Session.retrieve.return_value = {
+            "id": "cs_test_session",
+            "payment_status": "paid",
+            "client_reference_id": "tenant_123",
+            "line_items": {"data": [{"price": {"id": "price_growth_test"}}]},
+        }
         mock_stripe.error = MagicMock()
         mock_stripe.error.SignatureVerificationError = type(
             "SignatureVerificationError", (Exception,), {}
         )
 
-        yield TestClient(app), mock_db, created
+        yield TestClient(app), mock_db, created, mock_stripe
 
 
-def test_stripe_checkout_assigns_100000_credits(stripe_client):
-    client, mock_db, created = stripe_client
+def test_stripe_checkout_assigns_pack_credits_not_amount(stripe_client, monkeypatch):
+    monkeypatch.setenv("STRIPE_PRICE_GROWTH", "price_growth_test")
+    monkeypatch.setenv("STRIPE_CREDITS_GROWTH", "100000")
+    monkeypatch.setenv("STRIPE_PRICE_DEVELOPER", "price_developer_test")
+    client, mock_db, created, _stripe = stripe_client
     response = client.post(
         "/v1/webhooks/stripe",
         content=json.dumps({"id": "evt_test"}),
@@ -109,17 +122,41 @@ def test_stripe_checkout_assigns_100000_credits(stripe_client):
         },
     )
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
-    mock_db.process_stripe_event.assert_awaited_once()
-    kwargs = mock_db.process_stripe_event.await_args.kwargs
-    assert kwargs["customer_email"] == "buyer@example.com"
+    body = response.json()
+    assert body["status"] == "success"
+    assert "key" not in body
+    assert "ses_" not in response.text
+    mock_db.apply_paid_pack.assert_awaited_once()
+    kwargs = mock_db.apply_paid_pack.await_args.kwargs
+    assert kwargs["tenant_id"] == "tenant_123"
     assert kwargs["credits_to_add"] == 100000
+    assert kwargs["plan_tier"] == "growth"
+    assert "customer_email" not in kwargs
+
+
+def test_stripe_ignores_metadata_when_price_does_not_match(stripe_client, monkeypatch):
+    monkeypatch.setenv("STRIPE_PRICE_GROWTH", "price_growth_test")
+    monkeypatch.setenv("STRIPE_PRICE_DEVELOPER", "price_developer_test")
+    client, mock_db, _created, mock_stripe = stripe_client
+    mock_stripe.checkout.Session.retrieve.return_value = {
+        "id": "cs_test_session",
+        "client_reference_id": "tenant_123",
+        "line_items": {"data": [{"price": {"id": "price_attacker_cheap"}}]},
+    }
+    response = client.post(
+        "/v1/webhooks/stripe",
+        content=json.dumps({"id": "evt_test"}),
+        headers={"stripe-signature": "t=1,v1=fake"},
+    )
+    assert response.status_code == 200
+    assert response.json()["reason"] == "unbillable"
+    mock_db.apply_paid_pack.assert_not_called()
 
 
 def test_stripe_unconfigured_returns_503(monkeypatch):
     monkeypatch.setenv("GATEWAY_ADMIN_KEY", "ses_stripe_webhook_test_admin_key_32c")
-    with patch("gateway.stripe_webhook.STRIPE_WEBHOOK_SECRET", ""), \
-         patch("gateway.stripe_webhook.stripe", MagicMock()), \
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "")
+    with patch("gateway.stripe_webhook.stripe", MagicMock()), \
          patch("gateway.server.get_database_adapter") as mock_db_func, \
          patch("gateway.server._probe_qdrant", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server._probe_redis", new_callable=AsyncMock, return_value=True), \

@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+!.env.compose.example
+!.env.prod.example
+data
+portal/node_modules
+**/__pycache__
+**/.pytest_cache
+core_rs/target
+model_onnx
+*.db
