@@ -47,12 +47,22 @@ async def test_created_key_is_returned_once_and_cached_as_hash(tmp_path):
     await adapter.log_usage(
         tenant_id=result["key_details"]["tenant_id"],
         api_key_id=result["key_details"]["id"],
-        endpoint="/api/v1/search",
+        endpoint="/v1/rerank",
         tokens=12,
         latency_ms=4.5,
     )
+    await adapter.update_credits(expected_hash, credits_deducted=1, tokens_saved=30)
     analytics = await adapter.get_analytics()
 
     assert analytics["total_requests"] == 1
-    assert analytics["total_searches"] == 1
-    assert analytics["recent_logs"][0]["endpoint"] == "/api/v1/search"
+    assert analytics["total_reranks"] == 1
+    assert analytics["tokens_saved_total"] == 30
+    assert analytics["recent_logs"][0]["endpoint"] == "/v1/rerank"
+
+
+@pytest.mark.asyncio
+async def test_ping_succeeds_on_a_fresh_database(tmp_path):
+    adapter = SQLiteDatabaseAdapter(str(tmp_path / "gateway.db"))
+    await adapter.connect()
+
+    await adapter.ping()

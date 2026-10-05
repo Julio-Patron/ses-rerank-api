@@ -25,6 +25,10 @@ class DatabaseAdapter(abc.ABC):
         pass
 
     @abc.abstractmethod
+    async def ping(self) -> None:
+        """Raise if the database cannot answer a trivial query."""
+
+    @abc.abstractmethod
     async def get_api_key(self, key_hash: str) -> Optional[Dict[str, Any]]:
         pass
 
@@ -83,6 +87,13 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
         # Run inside thread pool to prevent blocking event loop
         await asyncio.to_thread(self._run_migrations)
         logger.info(f"📂 SQLite persistent storage loaded at: {self.db_path}")
+
+    async def ping(self) -> None:
+        def _ping():
+            with self._get_connection() as conn:
+                conn.execute("SELECT 1").fetchone()
+
+        await asyncio.to_thread(_ping)
 
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path, timeout=15.0)
@@ -402,11 +413,11 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                 cursor.execute("SELECT COUNT(*) FROM usage_logs")
                 total_reqs = cursor.fetchone()[0]
                 
-                cursor.execute("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed LIKE '%search%'")
-                total_searches = cursor.fetchone()[0]
-                
-                cursor.execute("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed LIKE '%ingest%'")
-                total_ingestions = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed = '/v1/rerank'")
+                total_reranks = cursor.fetchone()[0]
+
+                cursor.execute("SELECT COALESCE(SUM(tokens_saved_total), 0) FROM api_keys")
+                tokens_saved_total = cursor.fetchone()[0]
                 
                 cursor.execute("SELECT AVG(processing_time_ms) FROM usage_logs")
                 avg_latency = cursor.fetchone()[0] or 0.0
@@ -449,8 +460,8 @@ class SQLiteDatabaseAdapter(DatabaseAdapter):
                 return {
                     "total_requests": total_reqs,
                     "total_errors": 0,
-                    "total_searches": total_searches,
-                    "total_ingestions": total_ingestions,
+                    "total_reranks": total_reranks,
+                    "tokens_saved_total": tokens_saved_total,
                     "average_latency_ms": avg_latency,
                     "keys_performance": keys_info,
                     "recent_logs": logs
@@ -535,6 +546,10 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
         )
         await self._run_migrations()
         logger.info(f"🐘 PostgreSQL active on: postgres://{POSTGRES_USER}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}")
+
+    async def ping(self) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
 
     async def _run_migrations(self) -> None:
         async with self.pool.acquire() as conn:
@@ -783,8 +798,8 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
     async def get_analytics(self) -> Dict[str, Any]:
         async with self.pool.acquire() as conn:
             total_reqs = await conn.fetchval("SELECT COUNT(*) FROM usage_logs") or 0
-            total_searches = await conn.fetchval("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed LIKE '%search%'") or 0
-            total_ingestions = await conn.fetchval("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed LIKE '%ingest%'") or 0
+            total_reranks = await conn.fetchval("SELECT COUNT(*) FROM usage_logs WHERE endpoint_accessed = '/v1/rerank'") or 0
+            tokens_saved_total = await conn.fetchval("SELECT COALESCE(SUM(tokens_saved_total), 0) FROM api_keys") or 0
             avg_latency = await conn.fetchval("SELECT AVG(processing_time_ms) FROM usage_logs") or 0.0
             
             # Recent logs
@@ -825,8 +840,8 @@ class PostgresDatabaseAdapter(DatabaseAdapter):
             return {
                 "total_requests": total_reqs,
                 "total_errors": 0,
-                "total_searches": total_searches,
-                "total_ingestions": total_ingestions,
+                "total_reranks": total_reranks,
+                "tokens_saved_total": tokens_saved_total,
                 "average_latency_ms": float(avg_latency),
                 "keys_performance": keys_info,
                 "recent_logs": logs

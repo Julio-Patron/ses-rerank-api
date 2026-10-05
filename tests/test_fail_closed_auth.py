@@ -9,9 +9,6 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 for _mod in (
-    "qdrant_client",
-    "qdrant_client.http",
-    "sentence_transformers",
     "jas_vector_core",
     "redis",
     "redis.asyncio",

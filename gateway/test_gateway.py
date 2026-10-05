@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -9,15 +10,8 @@ from fastapi.testclient import TestClient
 # Inject parent directory path to import 'ses' and 'gateway'
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Soft-mock optional heavy deps if not installed (unit tests stay offline)
-for _mod in (
-    "qdrant_client",
-    "qdrant_client.http",
-    "sentence_transformers",
-    "jas_vector_core",
-    "redis",
-    "redis.asyncio",
-):
+# Soft-mock optional native deps if not installed (unit tests stay offline)
+for _mod in ("jas_vector_core", "redis", "redis.asyncio"):
     sys.modules.setdefault(_mod, MagicMock())
 
 # Set environment variable for tests
@@ -28,6 +22,8 @@ os.environ["GATEWAY_ADMIN_KEY"] = TEST_ADMIN_KEY
 import gateway.server as server_module
 from gateway.database import DatabaseAdapter
 from gateway.server import app
+from ses.services.rerank_queue import QUEUE_KEY
+from ses.services.reranker import InvalidRerankRequest
 
 client = TestClient(app)
 
@@ -51,9 +47,7 @@ RERANK_MOCK_RESULT = {
 def mock_gateway_services():
     """Mock database adapter and RerankerService for offline unit tests."""
     with patch("gateway.server.get_database_adapter") as mock_db_func, \
-         patch("gateway.server._probe_qdrant", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server._probe_redis", new_callable=AsyncMock, return_value=True), \
-         patch("gateway.server._probe_ollama", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server.redis_available", False), \
          patch("gateway.server.RerankerService") as mock_reranker_class:
 
@@ -74,6 +68,7 @@ def mock_gateway_services():
 
         mock_db = MagicMock()
         mock_db.connect = AsyncMock()
+        mock_db.ping = AsyncMock()
         mock_db.bootstrap_admin_key = AsyncMock()
 
         async def mock_get_api_key(key_hash):
@@ -148,8 +143,8 @@ def mock_gateway_services():
             return_value={
                 "total_requests": 50,
                 "total_errors": 0,
-                "total_searches": 30,
-                "total_ingestions": 20,
+                "total_reranks": 50,
+                "tokens_saved_total": 1200,
                 "average_latency_ms": 1.2,
                 "keys_performance": [
                     {
@@ -204,7 +199,20 @@ def test_health_endpoint_does_not_require_auth():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["services"]["qdrant"] == "connected"
+    assert data["services"] == {
+        "reranker": "loaded",
+        "database": "connected",
+        "redis": "connected",
+        "rerank_worker": "offline",
+    }
+
+
+def test_readiness_requires_the_reranker_engine():
+    with patch("gateway.server.reranker_service", None):
+        response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json()["services"]["reranker"] == "not_loaded"
 
 
 def test_liveness_does_not_probe_dependencies():
@@ -221,10 +229,10 @@ def test_readiness_returns_503_when_a_required_dependency_is_down():
         "status": "degraded",
         "timestamp": "2026-09-02T00:00:00Z",
         "services": {
-            "qdrant": "connected",
+            "reranker": "loaded",
+            "database": "disconnected",
             "redis": "connected",
-            "ollama_api": "disconnected",
-            "rust_acceleration": "inactive",
+            "rerank_worker": "offline",
         },
     }
     with patch(
@@ -484,4 +492,197 @@ def test_rerank():
     assert len(data["results"]) == 2
     assert data["meta"]["credits_deducted"] == 1
     assert data["meta"]["credits_remaining"] == 990
-    assert data["meta"]["tokens_saved"] == 4
+    assert data["meta"]["tokens"] == {
+        "input_tokens": 10,
+        "output_tokens": 6,
+        "saved_tokens": 4,
+        "savings_percentage": 40.0,
+    }
+    assert data["meta"]["tokens_saved_total"] == 4
+    assert data["meta"]["cached"] is False
+
+
+ADMIN_BEARER = {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
+
+
+def test_rerank_passes_document_objects_to_engine_as_json(mock_gateway_services):
+    _, engine = mock_gateway_services
+    payload = {
+        "query": "vacaciones",
+        "documents": [
+            "plain text",
+            {"text": "doce días de vacaciones", "metadata": {"year": 2023}},
+            {"text": "sin metadata"},
+        ],
+        "top_n": 2,
+    }
+
+    response = client.post("/v1/rerank", json=payload, headers=ADMIN_BEARER)
+
+    assert response.status_code == 200
+    assert engine.rerank.await_args.kwargs["documents"] == [
+        "plain text",
+        {"text": "doce días de vacaciones", "metadata": {"year": 2023}},
+        {"text": "sin metadata"},
+    ]
+
+
+def test_rerank_invalid_jsonlogic_filter_returns_self_healing_400(mock_gateway_services):
+    _, engine = mock_gateway_services
+    engine.rerank.side_effect = InvalidRerankRequest("JSONLogic error: unknown operator")
+
+    response = client.post(
+        "/v1/rerank",
+        json={"query": "q", "documents": ["a"], "top_n": 1, "jsonlogic_filter": {"x": 1}},
+        headers=ADMIN_BEARER,
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"] == "invalid_filter"
+    assert body["retryable"] is True
+    assert "unknown operator" in body["message"]
+
+
+@pytest.mark.parametrize(
+    "documents, top_n, fragment",
+    [
+        (["a"], 0, "must be at least 1"),
+        (["a"] * (server_module.MAX_DOCUMENTS_PER_REQUEST + 1), 1, "At most"),
+    ],
+)
+def test_rerank_rejects_out_of_range_parameters(documents, top_n, fragment):
+    response = client.post(
+        "/v1/rerank",
+        json={"query": "q", "documents": documents, "top_n": top_n},
+        headers=ADMIN_BEARER,
+    )
+
+    assert response.status_code == 400
+    assert fragment in response.json()["message"]
+
+
+def test_rerank_returns_402_when_credits_run_out_concurrently(mock_gateway_services):
+    db, _ = mock_gateway_services
+    db.update_credits = AsyncMock(side_effect=ValueError("insufficient credits"))
+
+    response = client.post(
+        "/v1/rerank", json={"query": "q", "documents": ["a"], "top_n": 1}, headers=ADMIN_BEARER
+    )
+
+    assert response.status_code == 402
+
+
+def test_cache_key_includes_the_jsonlogic_filter():
+    docs = ["a", {"text": "b", "metadata": {"year": 2024}}]
+    without_filter = server_module.RerankRequest(query="q", documents=docs, top_n=1)
+    with_filter = server_module.RerankRequest(
+        query="q", documents=docs, top_n=1, jsonlogic_filter={"==": [1, 1]}
+    )
+
+    key_a = server_module.rerank_cache_key(
+        "tenant", without_filter, server_module.documents_as_json(without_filter.documents), None
+    )
+    key_b = server_module.rerank_cache_key(
+        "tenant", with_filter, server_module.documents_as_json(with_filter.documents), None
+    )
+
+    assert key_a != key_b
+    assert key_a.startswith("gateway:cache:rerank:tenant:")
+
+
+def _redis_with_worker(worker_online: bool, cached=None):
+    fake_redis = AsyncMock()
+    fake_redis.exists.return_value = 1 if worker_online else 0
+    fake_redis.get.return_value = cached
+    return fake_redis
+
+
+def test_rerank_goes_through_worker_queue_when_a_worker_is_online(mock_gateway_services):
+    _, engine = mock_gateway_services
+    fake_redis = _redis_with_worker(worker_online=True)
+    fake_queue = AsyncMock()
+    fake_queue.blpop.return_value = ("ses_rerank_result:x", json.dumps(RERANK_MOCK_RESULT))
+    payload = {
+        "query": "hello",
+        "documents": ["doc1", {"text": "doc2 hello", "metadata": {"k": "v"}}, "world peace"],
+        "top_n": 2,
+    }
+
+    with patch("gateway.server.redis_available", True), \
+         patch("gateway.server.redis_client", fake_redis), \
+         patch("gateway.server.redis_queue_client", fake_queue), \
+         patch("gateway.server.check_rate_limit", new_callable=AsyncMock):
+        response = client.post("/v1/rerank", json=payload, headers=ADMIN_BEARER)
+
+    assert response.status_code == 200
+    assert [r["index"] for r in response.json()["results"]] == [1, 2]
+    engine.rerank.assert_not_awaited()
+
+    queue_name, task_json = fake_redis.rpush.await_args.args
+    task = json.loads(task_json)
+    assert queue_name == QUEUE_KEY
+    assert task["documents"] == payload["documents"]
+    assert fake_queue.blpop.await_args.args[0] == [f"ses_rerank_result:{task['task_id']}"]
+
+
+def test_rerank_runs_in_process_when_no_worker_heartbeat(mock_gateway_services):
+    _, engine = mock_gateway_services
+    fake_redis = _redis_with_worker(worker_online=False)
+
+    with patch("gateway.server.redis_available", True), \
+         patch("gateway.server.redis_client", fake_redis), \
+         patch("gateway.server.check_rate_limit", new_callable=AsyncMock):
+        response = client.post(
+            "/v1/rerank", json={"query": "q", "documents": ["a", "b"], "top_n": 1},
+            headers=ADMIN_BEARER,
+        )
+
+    assert response.status_code == 200
+    engine.rerank.assert_awaited_once()
+    fake_redis.rpush.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "reply, expected_status",
+    [
+        (None, 504),
+        (("k", json.dumps({"error": "bad rule", "error_type": "invalid_request"})), 400),
+        (("k", json.dumps({"error": "Reranking failed", "error_type": "internal"})), 500),
+    ],
+)
+def test_worker_failures_map_to_http_errors(mock_gateway_services, reply, expected_status):
+    fake_redis = _redis_with_worker(worker_online=True)
+    fake_queue = AsyncMock()
+    fake_queue.blpop.return_value = reply
+
+    with patch("gateway.server.redis_available", True), \
+         patch("gateway.server.redis_client", fake_redis), \
+         patch("gateway.server.redis_queue_client", fake_queue), \
+         patch("gateway.server.check_rate_limit", new_callable=AsyncMock):
+        response = client.post(
+            "/v1/rerank", json={"query": "q", "documents": ["a"], "top_n": 1},
+            headers=ADMIN_BEARER,
+        )
+
+    assert response.status_code == expected_status
+
+
+def test_cached_result_is_served_without_running_the_engine(mock_gateway_services):
+    _, engine = mock_gateway_services
+    fake_redis = _redis_with_worker(worker_online=True, cached=json.dumps(RERANK_MOCK_RESULT))
+
+    with patch("gateway.server.redis_available", True), \
+         patch("gateway.server.redis_client", fake_redis), \
+         patch("gateway.server.check_rate_limit", new_callable=AsyncMock):
+        response = client.post(
+            "/v1/rerank",
+            json={"query": "q", "documents": ["a", "b", "c"], "top_n": 2},
+            headers={**ADMIN_BEARER, "Idempotency-Key": "retry-1"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["meta"]["cached"] is True
+    assert fake_redis.get.await_args.args[0] == "gateway:idempotency:tenant_uuid_dev:retry-1"
+    engine.rerank.assert_not_awaited()
+    fake_redis.rpush.assert_not_awaited()

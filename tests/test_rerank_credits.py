@@ -8,12 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 for _mod in (
-    "qdrant_client",
-    "qdrant_client.http",
-    "sentence_transformers",
     "jas_vector_core",
     "redis",
     "redis.asyncio",
@@ -48,9 +45,7 @@ def e2e_client():
     }
 
     with patch("gateway.server.get_database_adapter") as mock_db_func, \
-         patch("gateway.server._probe_qdrant", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server._probe_redis", new_callable=AsyncMock, return_value=True), \
-         patch("gateway.server._probe_ollama", new_callable=AsyncMock, return_value=True), \
          patch("gateway.server.redis_available", False), \
          patch("gateway.server.RerankerService") as mock_reranker_class:
 

@@ -1,7 +1,6 @@
+#[cfg(feature = "python")]
 pub mod cross_encoder;
 pub mod jsonlogic_filter;
-
-
 
 #[cfg(feature = "python")]
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
@@ -25,7 +24,7 @@ pub fn cosine_similarity_scores_from_flat_slice(
     if query_vector.len() != dimensions {
         return Err("query_vector length must match dimensions".to_string());
     }
-    if document_vectors.len() % dimensions != 0 {
+    if !document_vectors.len().is_multiple_of(dimensions) {
         return Err("document_vectors length must be a multiple of dimensions".to_string());
     }
     if query_vector.iter().any(|value| !value.is_finite()) {
@@ -92,6 +91,16 @@ pub fn cosine_similarity_scores(
     if threshold.is_some_and(|value| !value.is_finite()) {
         return Err("threshold must be finite".to_string());
     }
+    if let Some((index, document)) = document_vectors
+        .iter()
+        .enumerate()
+        .find(|(_, document)| document.len() != expected_dimensions)
+    {
+        return Err(format!(
+            "document {index} has {} dimensions; expected {expected_dimensions}",
+            document.len()
+        ));
+    }
     if top_k == 0 {
         return Ok(Vec::new());
     }
@@ -106,7 +115,7 @@ pub fn cosine_similarity_scores(
         .par_iter()
         .enumerate()
         .filter_map(|(index, document)| {
-            if document.len() != expected_dimensions || document.iter().any(|value| !value.is_finite()) {
+            if document.iter().any(|value| !value.is_finite()) {
                 return None;
             }
             let (dot_product, document_squared_norm) = query_vector
@@ -264,17 +273,17 @@ mod tests {
     #[test]
     fn handles_zero_vectors_and_empty_documents() {
         let zero_scores =
-            cosine_similarity_scores(&[0.0, 0.0], &vec![vec![1.0, 0.0]], 5, None).unwrap();
-        let empty_scores = cosine_similarity_scores(&[1.0], &vec![], 5, Some(0.5)).unwrap();
+            cosine_similarity_scores(&[0.0, 0.0], &[vec![1.0, 0.0]], 5, None).unwrap();
+        let empty_scores = cosine_similarity_scores(&[1.0], &[], 5, Some(0.5)).unwrap();
         assert_close(zero_scores[0].1, 0.0);
         assert!(empty_scores.is_empty());
     }
 
     #[test]
     fn rejects_invalid_dimensions_and_non_finite_values() {
-        let dimensions = cosine_similarity_scores(&[1.0, 0.0], &vec![vec![1.0]], 5, None).unwrap_err();
-        let query = cosine_similarity_scores(&[], &vec![], 5, None).unwrap_err();
-        let finite = cosine_similarity_scores(&[f32::NAN], &vec![vec![1.0]], 5, None).unwrap_err();
+        let dimensions = cosine_similarity_scores(&[1.0, 0.0], &[vec![1.0]], 5, None).unwrap_err();
+        let query = cosine_similarity_scores(&[], &[], 5, None).unwrap_err();
+        let finite = cosine_similarity_scores(&[f32::NAN], &[vec![1.0]], 5, None).unwrap_err();
         assert!(dimensions.contains("expected 2"));
         assert!(query.contains("must not be empty"));
         assert!(finite.contains("finite"));

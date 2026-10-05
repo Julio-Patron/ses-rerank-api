@@ -13,46 +13,35 @@ def _missing_or_placeholder(value) -> bool:
     normalized = value.strip().lower()
     return normalized.startswith(("change_me", "replace_"))
 
+
+def _optional_int(name: str):
+    raw = os.getenv(name, "").strip()
+    return int(raw) if raw else None
+
+
 # --- Environment & Debug ---
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 
-# --- Embedding Model ---
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")
-VECTOR_SIZE = 384
-
-# --- Chunking ---
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
-
-# --- Qdrant ---
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
-
-if not DEBUG and _missing_or_placeholder(QDRANT_API_KEY):
-    raise ValueError("CRITICAL: a non-placeholder QDRANT_API_KEY is mandatory in production.")
-
-# --- Redis ---
+# --- Redis (rate limiting, caching, worker queue) ---
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
 if not DEBUG and _missing_or_placeholder(REDIS_PASSWORD):
     raise ValueError("CRITICAL: a non-placeholder REDIS_PASSWORD is mandatory in production.")
 
-# --- Metadata ---
-ALLOWED_METADATA_KEYS = {"source", "author", "date", "tags", "category", "title", "url"}
-EXCLUDED_METADATA_KEYS = {"text_snippet", "full_text", "original_id"}
+# --- Reranker model ---
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RERANK_MODEL_DIR = os.getenv("RERANK_MODEL_DIR", os.path.join(_REPO_ROOT, "model_onnx"))
+RERANK_MODEL_FILE = os.getenv("RERANK_MODEL_FILE", "model.onnx")
+# Longest (query + document) pair fed to the cross-encoder, in model tokens.
+RERANK_MAX_TOKENS = int(os.getenv("RERANK_MAX_TOKENS", "512"))
+# ONNX Runtime intra-op threads; unset uses every logical CPU.
+RERANK_INTRA_THREADS = _optional_int("RERANK_INTRA_THREADS")
 
-# --- Persistence ---
-MOUNT_MANIFEST_PATH = os.getenv("MOUNT_MANIFEST_PATH", "data/mount_manifest.json")
+# --- Worker queue ---
+# How long the Gateway waits for a worker reply before answering 504.
+RERANK_QUEUE_TIMEOUT_SECONDS = float(os.getenv("RERANK_QUEUE_TIMEOUT_SECONDS", "30"))
 
-# --- SES Personal / Watcher ---
-WATCH_DIRECTORIES = [d.strip() for d in os.getenv("WATCH_DIRECTORIES", "").split(",")] if os.getenv("WATCH_DIRECTORIES") else []
-PERSONAL_NAMESPACE = os.getenv("PERSONAL_NAMESPACE", "personal_default")
-DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "2.0"))
-
-# --- Local LLM ---
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
-OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "60.0"))
+# --- Public URL shown in signup quickstart snippets ---
+PUBLIC_API_URL = os.getenv("PUBLIC_API_URL", "http://localhost:8000").rstrip("/")
